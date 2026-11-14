@@ -19,7 +19,10 @@ export async function proxyAgentRequest(req, res, {
   let serviceOrigin = 'invalid';
 
   try {
-    const base = new URL(serviceUrl);
+    const serviceBaseUrl = /^[a-z][a-z\d+.-]*:\/\//i.test(serviceUrl)
+      ? serviceUrl
+      : `http://${serviceUrl}`;
+    const base = new URL(serviceBaseUrl);
     serviceOrigin = base.origin;
     base.pathname = `${base.pathname.replace(/\/+$/, '')}/api/v1${req.path}`;
     base.search = req.url.slice(req.path.length);

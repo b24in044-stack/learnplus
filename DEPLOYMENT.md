@@ -5,6 +5,44 @@ FastAPI AI service, and the existing Supabase project. Deploy the Express and AI
 services separately, with the AI service reachable from Express over a private
 service URL where the hosting platform supports one.
 
+## Render Blueprint
+
+The root `render.yaml` defines three Render services from the `main` branch:
+
+1. `learnplus-ai-b24in044`, a private Python service in Singapore.
+2. `learnplus-api-b24in044`, the Express API in Singapore.
+3. `learnplus-frontend-b24in044`, the static Vite frontend.
+
+The AI service is private and its Render-provided private `host:port` address is
+passed to Express. Keep all three services in the same Render workspace and
+region. The static site calls the API at
+`https://learnplus-api-b24in044.onrender.com/api/v1`; the API CORS allowlist is
+restricted to the configured frontend origin.
+
+To create the services, sign in to Render, choose **New > Blueprint**, connect
+`b24in044-stack/learnplus`, select branch `main`, and apply the root
+`render.yaml`. Enter the prompted Supabase publishable key for the frontend and
+the server-side Supabase publishable key, Supabase secret key, and Groq API key
+for the backend services using Render's secret inputs. Never put secret values
+in this file, GitHub, or a `VITE_` variable. The Supabase URL is preconfigured
+for the existing project `nolqcxsitmdkeremwvqa`; do not replace it.
+
+The blueprint sets the API plan to `0.5c-512mb` and the private AI plan to
+`1c-2g`; both are paid Render compute plans. Review Render's current pricing
+before applying the Blueprint. The static site is free. Do not select or apply
+the Blueprint if the displayed cost is not approved.
+
+Deployments should become healthy in dependency order: private AI service, API,
+then frontend. Render private services do not expose a public health URL and
+support TCP health checks only. Verify the private AI `/health` endpoint from
+the API service's shell or through an authenticated AI request from the
+frontend. Verify the API with
+`https://learnplus-api-b24in044.onrender.com/api/v1/health` and the frontend at
+`https://learnplus-frontend-b24in044.onrender.com/`. The API health response
+must report `status: "ok"` and `supabase_connected: true`; the AI health
+response must report provider and Supabase connectivity and embedding
+availability.
+
 ## Express and frontend
 
 1. Install Node dependencies with `npm ci`.

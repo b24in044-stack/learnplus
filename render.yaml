@@ -1,0 +1,69 @@
+services:
+  - type: pserv
+    name: learnplus-ai-b24in044
+    runtime: python
+    region: singapore
+    plan: 1c-2g
+    buildCommand: python -m pip install -r ai_service/requirements.txt
+    startCommand: python -m ai_service.serve
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.4
+      - key: SUPABASE_URL
+        value: https://nolqcxsitmdkeremwvqa.supabase.co
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: EMBEDDING_ENABLED
+        value: "true"
+
+  - type: web
+    name: learnplus-api-b24in044
+    runtime: node
+    region: singapore
+    plan: 0.5c-512mb
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DEMO_MODE
+        value: "false"
+      - key: TRUST_PROXY_HOPS
+        value: "1"
+      - key: CORS_ORIGINS
+        value: https://learnplus-frontend-b24in044.onrender.com
+      - key: AI_SERVICE_URL
+        fromService:
+          type: pserv
+          name: learnplus-ai-b24in044
+          property: hostport
+      - key: SUPABASE_URL
+        value: https://nolqcxsitmdkeremwvqa.supabase.co
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+
+  - type: web
+    name: learnplus-frontend-b24in044
+    runtime: static
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_API_BASE_URL
+        value: https://learnplus-api-b24in044.onrender.com/api/v1
+      - key: VITE_DEMO_MODE
+        value: "false"
+      - key: VITE_SUPABASE_URL
+        value: https://nolqcxsitmdkeremwvqa.supabase.co
+      - key: VITE_SUPABASE_PUBLISHABLE_KEY
+        sync: false

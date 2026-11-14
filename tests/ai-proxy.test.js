@@ -54,6 +54,22 @@ test('AI proxy forwards authenticated requests, query parameters, and correlatio
   assert.equal(res.body.task_type, 'recommendations');
 });
 
+test('AI proxy accepts Render private host:port service addresses', async () => {
+  const res = createResponseRecorder();
+  await proxyAgentRequest(createRequest(), res, {
+    serviceUrl: 'learnplus-ai.internal:10000',
+    fetchImpl: async (url) => {
+      assert.equal(url.href, 'http://learnplus-ai.internal:10000/api/v1/agents/recommendations?course_id=course-1');
+      return new Response(JSON.stringify({ task_type: 'recommendations', data: {}, agent_steps: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+
+  assert.equal(res.statusCode, 200);
+});
+
 test('AI proxy reports a safe correlated error when the service connection is refused', async () => {
   const res = createResponseRecorder();
   const logs = [];
