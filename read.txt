@@ -1,0 +1,352 @@
+# FINAL EXECUTION TASK — STUDENT AGENT AI LIVE SUPABASE MIGRATION, SECURITY VERIFICATION & PRODUCTION READINESS
+
+You are responsible for taking my existing Student Agent AI project from local implementation to verified live Supabase integration and production readiness.
+
+This is the final execution task. Do not give me another audit-only report or ask me to run multiple separate prompts.
+
+Work continuously through all phases in this task. Implement, verify, fix and report.
+
+## EXISTING PROJECT
+
+Supabase project ref: `nolqcxsitmdkeremwvqa`
+
+Use ONLY this existing Supabase project.
+
+The repository already contains:
+- Migrations 001–010.
+- Existing authentication and profile compatibility fixes.
+- Institution and academic management.
+- Assignments and submissions.
+- Notifications.
+- Attendance.
+- Projects and research.
+- Project documents and milestones.
+- Storage authorization.
+- Tenant isolation corrections.
+- Migration-aware API error handling.
+
+The existing `.env` configuration must remain unchanged.
+
+Preserve the exact six-layer AI architecture:
+1. Input Processing
+2. Student Context
+3. Pedagogical Planning
+4. Document Retrieval
+5. Formative Assessment
+6. Response Validation
+
+Do not rewrite the application.
+
+---
+
+## PHASE 1 — REMOTE DATABASE PREFLIGHT
+
+Connect to the existing Supabase project using the already authenticated Supabase CLI.
+
+First perform read-only verification.
+
+Check:
+
+1. Correct linked project ref.
+2. Remote migration history.
+3. Local migration history.
+4. Existing tables and columns.
+5. Foreign keys and constraints.
+6. Indexes.
+7. RLS-enabled tables.
+8. All existing RLS policies.
+9. Table grants.
+10. SECURITY DEFINER functions.
+11. Function ownership and search paths.
+12. Auth triggers.
+13. Storage buckets.
+14. Storage policies.
+15. Existing duplicate notification records.
+
+Compare the actual remote database with migrations 001–010.
+
+Important known facts:
+- Existing remote `profiles` has only `id`, `email`, `role`, `is_approved` in its legacy schema.
+- Existing academic tables must be preserved.
+- Newer institution, attendance, notification, project and research tables were previously reported missing.
+- Never rerun the original base migration against existing tables.
+- Do not assume migration history is identical to the repository.
+
+Do not skip this phase.
+
+## PHASE 2 — FIX MIGRATIONS BEFORE APPLYING
+
+Review all pending migrations and correct defects.
+
+Pay special attention to:
+
+- Profile compatibility.
+- Institution assignment.
+- Cross-institution isolation.
+- Project ownership.
+- Project membership.
+- Project feedback.
+- Project updates.
+- Project documents.
+- Milestones.
+- Research workspace ownership.
+- Research source authorization.
+- Attendance authorization.
+- Notification deduplication.
+- Storage upload, read, update and delete.
+
+Check every existing permissive policy. Remember that permissive RLS policies combine using OR.
+
+Ensure no older policy bypasses a new restrictive policy.
+
+Separate SELECT, INSERT, UPDATE and DELETE policies where necessary.
+
+Correct Storage authorization so that every operation validates the parent project, institution and authorized membership.
+
+Do not allow unrestricted faculty access to every research workspace.
+
+Ensure admins can only access their authorized institution.
+
+Preserve legacy unassigned users and records. Never automatically assign them to an institution.
+
+Do not delete notification history to make a unique index succeed. Report duplicates and resolve them safely without losing records.
+
+Create new forward-only corrective migrations if needed.
+
+Do not edit historical migrations already applied remotely.
+
+## PHASE 3 — BACKUP AND MIGRATION EXECUTION
+
+Before any remote write:
+
+1. Confirm the exact project ref.
+2. Confirm a recoverable database backup or equivalent recovery point exists.
+3. Check pending migration order.
+4. Check for destructive statements.
+5. Validate SQL syntax and migration dependencies.
+6. Confirm no existing data will be dropped, truncated or overwritten.
+7. Confirm that existing user IDs, roles and approval statuses remain unchanged.
+
+Then prepare the migration execution plan.
+
+I authorize applying the required, reviewed, pending migrations to this existing Supabase project, provided the preflight checks confirm that the changes are additive and safe.
+
+Do not execute any migration that:
+- Drops or recreates existing tables.
+- Deletes existing user or academic records.
+- Changes existing roles or approval states.
+- Introduces unreviewed destructive operations.
+- Risks irrecoverable data loss.
+- Has unresolved security conflicts.
+
+If any such issue is discovered, stop only the affected operation, explain the exact blocker and continue with independent safe tasks.
+
+Apply migrations in dependency order.
+
+Verify the remote migration history after execution.
+
+Do not blindly run a command that applies unreviewed migrations.
+
+## PHASE 4 — LIVE RLS AND STORAGE VERIFICATION
+
+Use a safe, disposable test environment with dedicated test accounts representing:
+
+- Student in Institution A.
+- Faculty in Institution A.
+- Admin in Institution A.
+- Student in Institution B.
+- Unassigned legacy user.
+
+Never use or modify real student accounts for security testing.
+
+Test the following against the actual Supabase database:
+
+### Profiles
+- Users can read their own authorized profile.
+- Students cannot change roles.
+- Users cannot approve themselves.
+- Cross-institution profile access is denied.
+
+### Projects
+- Project owners can access their projects.
+- Authorized members can access their projects.
+- Assigned guides can access supervised projects.
+- Unauthorized students are denied.
+- Institution B cannot access Institution A projects.
+
+### Project documents
+- Authorized uploads work.
+- Unauthorized uploads fail.
+- Authorized downloads work.
+- Unauthorized downloads fail.
+- Unauthorized replacement fails.
+- Unauthorized deletion fails.
+- Authorized deletion works.
+
+### Research
+- Owners can access their workspaces.
+- Assigned guides can access authorized workspaces.
+- Unassigned faculty cannot access private research.
+- Unauthorized sources cannot be read or modified.
+- Cross-institution access is denied.
+
+### Attendance
+- Students can read their own attendance.
+- Faculty can manage authorized course attendance.
+- Admins can access authorized institution reports.
+- Other institutions cannot access records.
+
+### Notifications
+- Users can read their own notifications.
+- Users cannot read or modify another user's notifications.
+- Deduplication works without deleting historical records.
+
+### Academic workflows
+- Student submission works.
+- Students cannot modify grades.
+- Authorized faculty can grade submissions.
+- Unauthorized faculty cannot access unrelated courses.
+
+For every test, capture the actual result and distinguish success from expected denial.
+
+Do not mark RLS or Storage as verified using mocked tests alone.
+
+## PHASE 5 — LIVE APPLICATION INTEGRATION
+
+Connect the local application to the verified Supabase schema.
+
+Run and verify:
+
+- Registration.
+- Login.
+- Logout.
+- Session persistence.
+- Profile loading.
+- Approval handling.
+- Student dashboard.
+- Faculty dashboard.
+- Admin dashboard.
+- Institution assignment.
+- Course access.
+- Announcements.
+- Assignments.
+- Submission.
+- Grading.
+- Notifications.
+- Attendance.
+- Project registration.
+- Project team management.
+- Milestones.
+- Document upload and download.
+- Research workspace.
+- AI academic assistance.
+
+Fix actual integration errors.
+
+Verify Express and FastAPI authentication independently.
+
+Do not trust frontend role values.
+
+Never expose service-role keys.
+
+Do not fabricate academic data or AI results.
+
+If an external AI provider is unavailable, report that limitation without breaking other features.
+
+## PHASE 6 — PRODUCTION SECURITY CHECK
+
+Verify:
+
+- `.env` is not committed.
+- Secrets are not exposed in frontend bundles.
+- Service-role keys are backend-only.
+- CORS is correctly restricted.
+- JWT verification is enforced.
+- Authentication errors do not reveal secrets.
+- Input validation exists.
+- File upload restrictions work.
+- Storage buckets are private.
+- Signed URLs have appropriate expiration.
+- Database permissions follow least privilege.
+- No unauthorized route bypasses exist.
+- No duplicate API routes create inconsistent authorization.
+- Error responses do not expose internal SQL or credentials.
+
+Preserve existing production configuration unless a specific defect requires correction. Do not deploy automatically.
+
+## PHASE 7 — COMPLETE TESTING
+
+Run:
+
+- `npm test`
+- `npm run lint`
+- `npm run build`
+- Backend tests.
+- AI service tests.
+- Python compilation.
+- JavaScript syntax checks.
+- Migration checks.
+- Real Supabase integration tests.
+- Real RLS tests.
+- Real Storage tests.
+- Browser E2E tests, if a safe test environment is available.
+
+Fix failures caused by the implementation.
+
+Clearly distinguish:
+- Mock tests.
+- Local database tests.
+- Live Supabase tests.
+- Browser E2E tests.
+
+Do not claim a test passed unless it actually ran.
+
+## STRICT RULES
+
+- Use the existing Supabase project only.
+- Do not change `.env`.
+- Do not change Supabase URLs or keys.
+- Do not switch projects.
+- Do not recreate existing academic tables.
+- Do not delete existing users or academic records.
+- Do not change existing user roles or approval statuses.
+- Do not expose secrets.
+- Do not introduce Firebase.
+- Do not change the six-layer AI architecture.
+- Do not push to GitHub.
+- Do not deploy without separate authorization.
+
+I authorize safe, reviewed pending database migrations and live verification as described above. This is not authorization for destructive database operations.
+
+## FINAL ACCEPTANCE REPORT
+
+At the end, provide an accurate table:
+
+| Area | Result |
+|---|---|
+| Live Supabase migration | Applied / Blocked |
+| Migration history | Verified / Not verified |
+| Schema compatibility | Verified / Not verified |
+| RLS policies | Tested / Not tested |
+| Cross-institution isolation | Tested / Not tested |
+| Storage upload | Tested / Not tested |
+| Storage download | Tested / Not tested |
+| Storage deletion | Tested / Not tested |
+| Authentication | Tested / Not tested |
+| Academic workflows | Tested / Not tested |
+| AI integration | Tested / Not tested |
+| Production security | Verified / Not verified |
+| Production readiness | Ready / Not ready |
+
+Also report:
+- Migration versions applied.
+- Exact files changed.
+- Actual test counts and results.
+- Any failed security test.
+- Remaining manual configuration.
+- Any provider/API limitations.
+- Deployment blockers.
+
+Do not claim production readiness unless the live database, RLS, Storage, authentication and critical workflows have actually been verified.
+
+**FINAL OBJECTIVE: Complete the existing Student Agent AI platform, safely migrate its required schema to the existing Supabase project, verify real database security and confirm production readiness without losing existing data or changing the six-layer architecture.*

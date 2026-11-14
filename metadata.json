@@ -1,0 +1,6 @@
+{
+  "name": "Student Agent AI",
+  "description": "Intelligent personalized learning platform powered by a six-layer multi-agent architecture.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
