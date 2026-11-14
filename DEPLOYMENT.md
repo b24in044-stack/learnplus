@@ -61,8 +61,10 @@ availability.
    `SUPABASE_SECRET_KEY` as server-side secrets. Keep the secret key out of all
    `VITE_` variables.
 8. Set `AI_SERVICE_URL` to the AI service's private URL, not `localhost` when
-   the services run in separate containers. Set `CORS_ORIGINS` to the deployed
-   web origin(s), without development origins.
+   the services run in separate containers. CORS applies only to `/api/v1`;
+   set `CORS_ORIGINS` to the exact deployed frontend origin(s) when the frontend
+   and API use different public origins, without development origins. Static
+   frontend assets do not use the API CORS allowlist.
 
 ## AI service
 

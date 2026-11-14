@@ -1171,7 +1171,14 @@ test('server health, demo policy, auth, authorization, and document deletion', a
   const blockedOrigin = await fetch(`${productionServer.baseUrl}/health`, {
     headers: { Origin: 'https://untrusted.example' },
   });
-  assert.equal(blockedOrigin.status, 403);
+  assert.notEqual(blockedOrigin.status, 403);
+  assert.equal(blockedOrigin.headers.get('access-control-allow-origin'), null);
+
+  const staticOriginRequest = await fetch(`${productionServer.baseUrl.replace('/api/v1', '')}/assets/cors-check.js`, {
+    headers: { Origin: 'https://untrusted.example' },
+  });
+  assert.notEqual(staticOriginRequest.status, 403);
+  assert.equal(staticOriginRequest.headers.get('access-control-allow-origin'), null);
 
   assert.equal(healthBody.supabase_configured, false);
 

@@ -78,13 +78,13 @@ const uploadRateLimit = rateLimit({
   message: { detail: 'Too many upload attempts. Please try again later.' },
 });
 
-app.use(cors({
+app.use('/api/v1', cors({
   origin: (origin, callback) => {
     if (!origin || allowedOrigins.has(origin)) {
       callback(null, true);
       return;
     }
-    callback(new Error('Origin not allowed by CORS'));
+    callback(null, false);
   },
   credentials: true,
 }));
@@ -1775,9 +1775,6 @@ if (existsSync(path.join(frontendBuildPath, 'index.html'))) {
 }
 
 app.use((err, _req, res, _next) => {
-  if (err && err.message === 'Origin not allowed by CORS') {
-    return res.status(403).json({ detail: 'Origin not allowed.' });
-  }
   if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
     return res.status(413).json({ detail: 'Uploaded files must be 10 MB or smaller.' });
   }
