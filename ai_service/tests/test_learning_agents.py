@@ -340,7 +340,8 @@ async def test_knowledge_graph_only_emits_explicit_prerequisite_edges():
 
 @pytest.mark.asyncio
 async def test_faculty_knowledge_graph_uses_assigned_course_access():
-    graph = await KnowledgeGraphAgent(FakeLearningRepository("faculty-1")).build(
+    agent = KnowledgeGraphAgent(FakeLearningRepository("faculty-1"))
+    graph = await agent.build(
         "course-1",
         is_faculty=True,
     )
@@ -350,6 +351,8 @@ async def test_faculty_knowledge_graph_uses_assigned_course_access():
         "Programming Basics",
         "Loops",
     ]
+    with pytest.raises(ForbiddenError, match="assigned to this faculty account"):
+        await agent.build("course-2", is_faculty=True)
 
 
 @pytest.mark.asyncio
