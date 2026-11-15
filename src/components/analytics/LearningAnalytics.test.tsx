@@ -1,15 +1,21 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { api } from '../../services/api';
+import { useAuth } from '../../context/AuthContext';
 import { LearningAnalytics } from './LearningAnalytics';
 
 vi.mock('../../services/api', () => ({
   api: {
     getAnalytics: vi.fn(),
     getAgentRecommendations: vi.fn(),
+    getFacultyCourseRoster: vi.fn(),
   },
+}));
+
+vi.mock('../../context/AuthContext', () => ({
+  useAuth: vi.fn(),
 }));
 
 const course = {
@@ -25,6 +31,14 @@ const course = {
 };
 
 describe('learning analytics errors', () => {
+  const setRole = (role: 'student' | 'instructor') => {
+    vi.mocked(useAuth).mockReturnValue({ role } as ReturnType<typeof useAuth>);
+  };
+
+  beforeEach(() => {
+    setRole('student');
+  });
+
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
@@ -86,5 +100,60 @@ describe('learning analytics errors', () => {
     expect(await screen.findByText('Topics selected from your estimated mastery and graded practice evidence:')).toBeTruthy();
     expect(screen.getByText('Functions')).toBeTruthy();
     expect(screen.getByText('43%')).toBeTruthy();
+  });
+
+  it('loads faculty reports from the selected course roster without student or AI endpoints', async () => {
+    setRole('instructor');
+    vi.mocked(api.getFacultyCourseRoster).mockResolvedValue([
+      {
+        id: 'student-1',
+        name: 'Student One',
+        email: 'student.one@example.test',
+        score: '80%',
+        status: 'Needs support',
+        weakArea: 'Data structures',
+        lastActive: 'Today',
+      },
+      {
+        id: 'student-2',
+        name: 'Student Two',
+        email: 'student.two@example.test',
+        score: '—',
+        status: 'No assessments',
+        weakArea: 'No progress recorded',
+        lastActive: '—',
+      },
+    ]);
+
+    render(<LearningAnalytics courses={[course]} onNavigate={vi.fn()} />);
+
+    expect(await screen.findByText('Faculty Course Reports')).toBeTruthy();
+    expect(await screen.findAllByText('80%')).toHaveLength(2);
+    expect(screen.getByText('Student One')).toBeTruthy();
+    expect(screen.getByText('Student Two')).toBeTruthy();
+    expect(api.getFacultyCourseRoster).toHaveBeenCalledWith(course.id);
+    expect(api.getAnalytics).not.toHaveBeenCalled();
+    expect(api.getAgentRecommendations).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Filter course report' }), {
+      target: { value: 'needs_support' },
+    });
+    expect(screen.getByText('Student One')).toBeTruthy();
+    expect(screen.queryByText('Student Two')).toBeNull();
+  });
+
+  it('shows faculty report errors and retries the course roster request', async () => {
+    setRole('instructor');
+    vi.mocked(api.getFacultyCourseRoster)
+      .mockRejectedValueOnce(new Error('Course roster is unavailable.'))
+      .mockResolvedValueOnce([]);
+
+    render(<LearningAnalytics courses={[course]} onNavigate={vi.fn()} />);
+
+    expect(await screen.findByText('Course roster is unavailable.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry Request' }));
+
+    expect(await screen.findByText('Cohort mean score')).toBeTruthy();
+    expect(api.getFacultyCourseRoster).toHaveBeenCalledTimes(2);
   });
 });

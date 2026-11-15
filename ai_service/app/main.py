@@ -4,9 +4,10 @@ import math
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from typing import Any
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -585,6 +586,7 @@ def create_app(
         payload: AgentExecutionRequest,
         request: Request,
         authorization: str | None,
+        background_tasks: BackgroundTasks | None = None,
     ) -> AgentExecutionResponse:
         authenticated = await authenticate(authorization)
         if not await limiter.allow(authenticated.id):
@@ -597,17 +599,25 @@ def create_app(
                 payload.task_type,
                 course_id=payload.course_id,
                 topic=payload.topic,
+                topics=payload.topics,
                 difficulty=payload.difficulty,
                 learning_objectives=payload.learning_objectives,
                 question_count=payload.question_count,
                 question_format=payload.question_format,
                 assessment_id=payload.assessment_id,
                 answers=payload.answers,
+                time_spent_seconds=payload.time_spent_seconds,
             )
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         except LookupError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
+        if payload.task_type == "assessment_evaluate" and background_tasks is not None:
+            background_tasks.add_task(
+                Coordinator(None, agents).execute,
+                "assignment_learning_retry",
+                assessment_id=str(payload.assessment_id),
+            )
         return AgentExecutionResponse(
             task_type=workflow.task_type,
             data=workflow.data,
@@ -675,6 +685,7 @@ def create_app(
                 task_type="assessment_generate",
                 course_id=payload.course_id,
                 topic=payload.topic,
+                topics=payload.topics,
                 difficulty=payload.difficulty,
                 learning_objectives=payload.learning_objectives,
                 question_count=payload.question_count,
@@ -718,6 +729,7 @@ def create_app(
         assessment_id: UUID,
         payload: AssessmentSubmissionRequest,
         request: Request,
+        background_tasks: BackgroundTasks,
         authorization: str | None = Header(default=None),
     ):
         return await execute_coordinated_task(
@@ -725,9 +737,84 @@ def create_app(
                 task_type="assessment_evaluate",
                 assessment_id=str(assessment_id),
                 answers=payload.answers,
+                time_spent_seconds=payload.time_spent_seconds,
             ),
             request,
             authorization,
+            background_tasks,
+        )
+
+    async def student_assignment_agents(
+        authorization: str | None,
+    ):
+        authenticated = await authenticate(authorization)
+        if authenticated.role != "student":
+            raise ForbiddenError("Only students can access their practice assignments.")
+        if not await limiter.allow(authenticated.id):
+            raise HTTPException(status_code=429, detail="AI request limit reached. Please try again shortly.")
+        return create_learning_agents(
+            authenticated.id,
+            None,
+            authorization,
+        )
+
+    async def execute_student_assignment_learning(
+        authorization: str | None,
+        task_type: str,
+        assessment_id: str | None = None,
+    ) -> dict[str, Any]:
+        agents = await student_assignment_agents(authorization)
+        coordinator = Coordinator(None, agents)
+        try:
+            workflow = await coordinator.execute(task_type, assessment_id=assessment_id)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return workflow.data
+
+    @application.post("/api/v1/agents/assessments/{assessment_id}/start")
+    async def start_practice_assessment(
+        assessment_id: UUID,
+        authorization: str | None = Header(default=None),
+    ):
+        agents = await student_assignment_agents(authorization)
+        try:
+            record = await agents.assessment.start(str(assessment_id))
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return {
+            "assessmentId": str(assessment_id),
+            "status": record.get("status", "IN_PROGRESS"),
+        }
+
+    @application.get("/api/v1/agents/learning/assignments")
+    async def assignment_learning_history(
+        authorization: str | None = Header(default=None),
+    ):
+        return await execute_student_assignment_learning(
+            authorization,
+            "assignment_learning_history",
+        )
+
+    @application.get("/api/v1/agents/learning/assignments/{assessment_id}")
+    async def assignment_learning_detail(
+        assessment_id: UUID,
+        authorization: str | None = Header(default=None),
+    ):
+        return await execute_student_assignment_learning(
+            authorization,
+            "assignment_learning_detail",
+            str(assessment_id),
+        )
+
+    @application.post("/api/v1/agents/learning/assignments/{assessment_id}/retry-analysis")
+    async def retry_assignment_learning_analysis(
+        assessment_id: UUID,
+        authorization: str | None = Header(default=None),
+    ):
+        return await execute_student_assignment_learning(
+            authorization,
+            "assignment_learning_retry",
+            str(assessment_id),
         )
 
     return application

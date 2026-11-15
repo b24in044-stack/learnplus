@@ -154,6 +154,14 @@ class FakeSupabase:
         self.rpc_calls = []
         self.selections = []
         self.rpc_results = {
+            "create_practice_assessment": {
+                "status": "GENERATED",
+                "courseId": COURSE_ID,
+            },
+            "transition_practice_assessment_state": {
+                "status": "IN_PROGRESS",
+                "startedAt": "2026-01-01T00:00:00+00:00",
+            },
             "record_concept_mastery_evidence": {
                 "conceptId": "loops",
                 "courseId": COURSE_ID,
@@ -217,6 +225,61 @@ def test_student_data_uses_trusted_client_and_validates_profile(monkeypatch):
 
     assert data["courses"][0]["id"] == COURSE_ID
     assert trusted_clients == [settings]
+
+
+@pytest.mark.asyncio
+async def test_practice_assignment_transition_uses_trusted_owner_scoped_rpc():
+    client = FakeSupabase()
+    repo = repository(client)
+
+    updated = await repo.transition_practice_assessment_state(
+        "assignment-1",
+        ["GENERATED"],
+        "IN_PROGRESS",
+        {"startedAt": "2026-01-01T00:00:00+00:00"},
+    )
+
+    assert updated["status"] == "IN_PROGRESS"
+    assert client.rpc_calls[-1] == (
+        "transition_practice_assessment_state",
+        {
+            "target_owner_id": USER_ID,
+            "target_assessment_id": "assignment-1",
+            "expected_statuses": ["GENERATED"],
+            "next_status": "IN_PROGRESS",
+            "payload_patch": {"startedAt": "2026-01-01T00:00:00+00:00"},
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_generated_practice_assessment_uses_trusted_owner_scoped_rpc():
+    client = FakeSupabase()
+    repo = repository(client)
+    payload = {"courseId": COURSE_ID, "status": "GENERATED", "questions": []}
+
+    await repo.save_agent_record("practice_assessments", "assignment-1", payload)
+
+    assert client.rpc_calls[-1] == (
+        "create_practice_assessment",
+        {
+            "target_owner_id": USER_ID,
+            "target_assessment_id": "assignment-1",
+            "target_course_id": COURSE_ID,
+            "assessment_payload": payload,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_practice_assessment_records_cannot_be_updated_through_generic_save():
+    with pytest.raises(ValueError, match="cannot be updated outside lifecycle transitions"):
+        await repository(FakeSupabase()).save_agent_record(
+            "practice_assessments",
+            "assignment-1",
+            {"status": "RESULTS_PUBLISHED"},
+            merge=True,
+        )
 
 
 @pytest.mark.asyncio

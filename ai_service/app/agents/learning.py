@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 from datetime import datetime, timezone
 from dataclasses import dataclass
@@ -16,6 +17,18 @@ from ai_service.app.providers.base import LLMProvider
 def _concept_id(value: object) -> str:
     cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(value).strip().lower()).strip("-")
     return cleaned[:120]
+
+
+def _is_published_practice_assessment(record: dict[str, Any]) -> bool:
+    result = record.get("result")
+    questions = result.get("questionResults") if isinstance(result, dict) else None
+    return (
+        record.get("status") == "RESULTS_PUBLISHED"
+        and isinstance(questions, list)
+        and bool(questions)
+        and len(questions) == result.get("totalQuestions")
+        and all(isinstance(item, dict) and isinstance(item.get("isCorrect"), bool) for item in questions)
+    )
 
 
 class GeneratedQuestion(BaseModel):
@@ -190,14 +203,18 @@ class LearningAnalyticsAgent:
 
     async def analyze(self, course_id: str | None = None) -> dict[str, Any]:
         data = await self._repository.get_student_data(course_id)
-        practice_submissions = [
-            item for item in await self._repository.list_agent_records("practice_submissions")
-            if not course_id or item.get("courseId") == course_id
-        ]
+        authorized_course_ids = {str(course["id"]) for course in data["courses"] if course.get("id")}
+        practice_submissions = []
+        for item in await self._repository.list_agent_records("practice_assessments", 1000):
+            if (
+                _is_published_practice_assessment(item)
+                and str(item.get("courseId") or "") in authorized_course_ids
+            ):
+                practice_submissions.append(item)
         practice_scores = [
-            float(item["percentage"])
+            float(item["result"]["percentage"])
             for item in practice_submissions
-            if isinstance(item.get("percentage"), (int, float))
+            if isinstance(item.get("result", {}).get("percentage"), (int, float))
         ]
         mastery = await self._knowledge_tracing.estimate(course_id)
         progress = [
@@ -512,13 +529,48 @@ class AssessmentAgent:
     async def generate(
         self,
         course_id: str,
-        topic: str,
+        topic: str | None,
         difficulty: str,
         learning_objectives: list[str],
         question_count: int,
         question_format: Literal["mcq", "descriptive"],
+        topics: list[str] | None = None,
     ) -> dict[str, Any]:
-        await self._repository.get_student_data(course_id)
+        student_data = await self._repository.get_student_data(course_id)
+        course = next(
+            (item for item in student_data["courses"] if str(item.get("id")) == course_id),
+            None,
+        )
+        if not course:
+            raise ForbiddenError("The authenticated student is not enrolled in this course.")
+        available_topics = course.get("topics")
+        if not isinstance(available_topics, list):
+            available_topics = course.get("units")
+        course_topics = [
+            str(item.get("title") or item.get("name")).strip()
+            for item in available_topics or []
+            if isinstance(item, dict) and (item.get("title") or item.get("name"))
+        ]
+        course_topics.extend(
+            str(item).strip()
+            for item in available_topics or []
+            if isinstance(item, str) and item.strip()
+        )
+        selected_topics = [
+            value.strip()
+            for value in (topics or [])
+            if isinstance(value, str) and value.strip()
+        ]
+        if not selected_topics and topic and topic.strip():
+            selected_topics = [topic.strip()]
+        if course_topics and selected_topics:
+            available_by_name = {value.casefold() for value in course_topics}
+            if any(value.casefold() not in available_by_name for value in selected_topics):
+                raise ValueError("Choose topics listed for the selected subject.")
+        topic_context = selected_topics or course_topics
+        generation_scope = ", ".join(topic_context) if topic_context else str(
+            course.get("title") or course.get("code") or "the selected subject"
+        )
         if self._provider is None:
             raise ProviderError("Groq is not configured for AI practice assessment generation.")
         schema = (
@@ -530,8 +582,15 @@ class AssessmentAgent:
         )
         prompt = json.dumps({
             "task": "Generate a student practice assessment.",
-            "course_id": course_id,
-            "topic": topic,
+            "course": {
+                "id": course_id,
+                "code": str(course.get("code", ""))[:80],
+                "title": str(course.get("title", ""))[:160],
+                "available_topics": course_topics[:50],
+            },
+            "topics": topic_context,
+            "topic": generation_scope,
+            "topic_selection_is_empty": not selected_topics,
             "difficulty": difficulty,
             "learning_objectives": learning_objectives,
             "question_count": question_count,
@@ -577,21 +636,29 @@ class AssessmentAgent:
             })
         record = {
             "courseId": course_id,
+            "courseCode": str(course.get("code") or ""),
+            "subject": str(course.get("title") or course.get("code") or ""),
             "aiGenerated": True,
             "assessmentType": "practice",
             "title": assessment.title,
-            "topic": topic,
+            "topic": generation_scope,
+            "selectedTopics": selected_topics,
+            "topics": list(dict.fromkeys(question["topic"] for question in questions)),
             "difficulty": difficulty,
             "format": question_format,
             "questions": questions,
             "createdAt": datetime.now(timezone.utc),
+            "status": "GENERATED",
+            "learningAnalysisStatus": None,
         }
         await self._repository.save_agent_record("practice_assessments", assessment_id, record)
         return {
             "assessmentId": assessment_id,
             "courseId": course_id,
             "title": assessment.title,
-            "topic": topic,
+            "topic": generation_scope,
+            "topics": record["topics"],
+            "subject": str(course.get("title") or course.get("code") or ""),
             "difficulty": difficulty,
             "format": question_format,
             "aiGenerated": True,
@@ -599,10 +666,31 @@ class AssessmentAgent:
             "questions": public_questions,
         }
 
+    async def start(self, assessment_id: str) -> dict[str, Any]:
+        assessment = await self._repository.get_agent_record("practice_assessments", assessment_id)
+        if not assessment or assessment.get("aiGenerated") is not True:
+            raise LookupError("AI practice assessment was not found or is not accessible.")
+        course_id = assessment.get("courseId")
+        if not isinstance(course_id, str):
+            raise ProviderError("The stored practice assessment has invalid course metadata.")
+        await self._repository.get_student_data(course_id)
+        status = assessment.get("status", "GENERATED")
+        if status == "GENERATED":
+            return await self._repository.transition_practice_assessment_state(
+                assessment_id,
+                ["GENERATED"],
+                "IN_PROGRESS",
+                {"startedAt": datetime.now(timezone.utc).isoformat()},
+            )
+        if status in {"IN_PROGRESS", "SUBMITTED", "GRADED", "RESULTS_PUBLISHED"}:
+            return assessment
+        raise ValueError("This practice assignment cannot be started in its current state.")
+
     async def evaluate(
         self,
         assessment_id: str,
         answers: dict[str, int | str],
+        time_spent_seconds: int = 0,
     ) -> dict[str, Any]:
         assessment = await self._repository.get_agent_record("practice_assessments", assessment_id)
         if not assessment or assessment.get("aiGenerated") is not True:
@@ -619,139 +707,573 @@ class AssessmentAgent:
             raise ValueError("The submission contains an answer for an unknown question.")
 
         for question in questions:
-            answer = answers.get(question["id"])
+            question_id = question["id"]
+            if question_id not in answers:
+                continue
+            answer = answers[question_id]
             if question.get("format") == "mcq":
                 options = question.get("options")
-                if answer is not None and (
+                if (
                     type(answer) is not int
                     or not isinstance(options, list)
                     or answer < 0
                     or answer >= len(options)
                 ):
                     raise ValueError("A multiple-choice answer is outside the available options.")
-            elif answer is not None and (not isinstance(answer, str) or len(answer) > 4000):
+            elif not isinstance(answer, str) or not answer.strip() or len(answer) > 4000:
                 raise ValueError("A descriptive answer must be text of at most 4000 characters.")
 
-        descriptive = [
-            question for question in questions
-            if question.get("format") == "descriptive"
-        ]
-        descriptive_results: dict[str, dict[str, Any]] = {}
-        if descriptive:
-            if self._provider is None:
-                raise ProviderError("Groq is not configured for descriptive assessment evaluation.")
-            evaluation_prompt = json.dumps({
-                "task": "Grade the student's practice responses against the supplied rubrics.",
-                "items": [
+        status = assessment.get("status", "GENERATED")
+        if status == "RESULTS_PUBLISHED":
+            if assessment.get("submittedAnswers") != answers:
+                raise ValueError("This assignment has already been submitted with different answers.")
+            saved_result = assessment.get("result")
+            if isinstance(saved_result, dict):
+                return {
+                    **saved_result,
+                    "status": status,
+                    "learningAnalysisStatus": assessment.get("learningAnalysisStatus"),
+                }
+            raise ProviderError("The published practice assignment has no saved result.")
+        if status == "GENERATED":
+            raise ValueError("Start this assignment before submitting it.")
+        if set(answers) != question_ids:
+            if status == "IN_PROGRESS":
+                await self._repository.transition_practice_assessment_state(
+                    assessment_id,
+                    ["IN_PROGRESS"],
+                    "IN_PROGRESS",
                     {
-                        "id": question["id"],
-                        "prompt": question["question"],
-                        "reference_answer": question["reference_answer"],
-                        "rubric": question["rubric"],
-                        "student_answer": str(answers.get(question["id"], ""))[:4000],
-                    }
-                    for question in descriptive
-                ],
-                "output_schema": {
-                    "evaluations": [{
-                        "id": "question id",
-                        "score": "integer from 0 to 100",
-                        "feedback": "brief constructive feedback",
-                    }],
+                        "draftAnswers": answers,
+                        "unansweredQuestionIds": sorted(question_ids - set(answers)),
+                    },
+                )
+            raise ValueError("Answer every question before submitting this assignment.")
+        if status == "IN_PROGRESS":
+            assessment = await self._repository.transition_practice_assessment_state(
+                assessment_id,
+                ["IN_PROGRESS"],
+                "SUBMITTED",
+                {
+                    "submittedAnswers": answers,
+                    "submittedAt": datetime.now(timezone.utc).isoformat(),
+                    "timeSpentSeconds": max(0, min(time_spent_seconds, 86400)),
                 },
-                "do_not": ["return private chain of thought", "invent facts", "claim an official grade"],
-            })
-            try:
-                raw = await self._generate_json(evaluation_prompt, 1200)
-                parsed = json.loads(raw)
-                entries = parsed["evaluations"]
-                if not isinstance(entries, list):
-                    raise ValueError("Evaluations must be a list.")
-                for item in entries:
-                    if (
-                        isinstance(item, dict)
-                        and item.get("id") in {question["id"] for question in descriptive}
-                        and isinstance(item.get("score"), int)
-                        and 0 <= item["score"] <= 100
-                        and isinstance(item.get("feedback"), str)
-                    ):
-                        descriptive_results[item["id"]] = {
-                            "score": item["score"],
-                            "feedback": item["feedback"][:1000],
+            )
+            if assessment.get("submittedAnswers") != answers:
+                raise ValueError("This assignment has already been submitted with different answers.")
+            status = assessment.get("status")
+        elif status == "SUBMITTED":
+            if assessment.get("submittedAnswers") != answers:
+                raise ValueError("This assignment has already been submitted with different answers.")
+        elif status == "GRADED":
+            if assessment.get("submittedAnswers") != answers:
+                raise ValueError("This assignment has already been submitted with different answers.")
+            saved_result = assessment.get("result")
+            if not isinstance(saved_result, dict):
+                raise ProviderError("The graded practice assignment has no saved result.")
+        else:
+            raise ValueError("This practice assignment cannot be submitted in its current state.")
+
+        if status == "GRADED":
+            result = assessment["result"]
+        else:
+            answers = assessment["submittedAnswers"]
+
+            descriptive = [
+                question for question in questions
+                if question.get("format") == "descriptive"
+            ]
+            descriptive_results: dict[str, dict[str, Any]] = {}
+            if descriptive:
+                if self._provider is None:
+                    raise ProviderError("Groq is not configured for descriptive assessment evaluation.")
+                evaluation_prompt = json.dumps({
+                    "task": "Grade the student's practice responses against the supplied rubrics.",
+                    "items": [
+                        {
+                            "id": question["id"],
+                            "prompt": question["question"],
+                            "reference_answer": question["reference_answer"],
+                            "rubric": question["rubric"],
+                            "student_answer": str(answers[question["id"]])[:4000],
                         }
-            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
-                raise ProviderError("Groq returned invalid descriptive assessment feedback.") from error
-            if len(descriptive_results) != len(descriptive):
-                raise ProviderError("Groq did not evaluate every descriptive practice response.")
+                        for question in descriptive
+                    ],
+                    "output_schema": {
+                        "evaluations": [{
+                            "id": "question id",
+                            "score": "integer from 0 to 100",
+                            "feedback": "brief constructive feedback",
+                        }],
+                    },
+                    "do_not": ["return private chain of thought", "invent facts", "claim an official grade"],
+                })
+                try:
+                    raw = await self._generate_json(evaluation_prompt, 1200)
+                    parsed = json.loads(raw)
+                    entries = parsed["evaluations"]
+                    if not isinstance(entries, list):
+                        raise ValueError("Evaluations must be a list.")
+                    for item in entries:
+                        if (
+                            isinstance(item, dict)
+                            and item.get("id") in {question["id"] for question in descriptive}
+                            and isinstance(item.get("score"), int)
+                            and 0 <= item["score"] <= 100
+                            and isinstance(item.get("feedback"), str)
+                        ):
+                            descriptive_results[item["id"]] = {
+                                "score": item["score"],
+                                "feedback": item["feedback"][:1000],
+                            }
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+                    raise ProviderError("Groq returned invalid descriptive assessment feedback.") from error
+                if len(descriptive_results) != len(descriptive):
+                    raise ProviderError("Groq did not evaluate every descriptive practice response.")
 
-        results = []
-        tracing_evidence = []
-        total_score = 0.0
-        for question in questions:
-            answer = answers.get(question["id"])
-            if question.get("format") == "mcq":
-                is_correct = answer == question.get("answer_index")
-                score = 100.0 if is_correct else 0.0
-                feedback = question.get("explanation", "")[:1000]
-            else:
-                answer_text = answer if isinstance(answer, str) else ""
-                evaluation = descriptive_results[question["id"]]
-                score = float(evaluation["score"])
-                is_correct = score >= 70
-                feedback = evaluation["feedback"]
-            total_score += score
-            results.append({
-                "questionId": question["id"],
-                "questionText": question["question"],
-                "topic": question["topic"],
-                "score": score,
-                "feedback": feedback,
-                "source": "AI-generated practice assessment",
-            })
-            tracing_evidence.append({
-                "concept_id": _concept_id(question["topic"]),
-                "topic": question["topic"],
-                "mastered": is_correct,
-            })
+            results = []
+            total_score = 0.0
+            for question in questions:
+                question_id = question["id"]
+                answer = answers[question_id]
+                if question.get("format") == "mcq":
+                    correct_option = question["answer_index"]
+                    is_correct = answer == correct_option
+                    score = 100.0 if is_correct else 0.0
+                    feedback = question.get("explanation", "")[:1000]
+                    correct_answer = question["options"][correct_option]
+                    selected_answer = question["options"][answer]
+                else:
+                    evaluation = descriptive_results[question_id]
+                    score = float(evaluation["score"])
+                    is_correct = score >= 70
+                    feedback = evaluation["feedback"]
+                    correct_option = None
+                    correct_answer = question["reference_answer"]
+                    selected_answer = answer
+                total_score += score
+                results.append({
+                    "questionId": question_id,
+                    "questionText": question["question"],
+                    "topic": question["topic"],
+                    "selectedAnswer": selected_answer,
+                    "correctAnswer": correct_answer,
+                    "selectedOption": answer if isinstance(answer, int) else None,
+                    "correctOption": correct_option,
+                    "score": score,
+                    "isCorrect": is_correct,
+                    "explanation": feedback,
+                    "source": "AI-generated practice assessment",
+                })
 
-        percentage = round(total_score / len(questions), 1)
-        submission_id = str(uuid4())
-        result = {
-            "submissionId": submission_id,
-            "assessmentId": assessment_id,
-            "courseId": course_id,
-            "assessmentTitle": assessment["title"],
-            "aiGenerated": True,
-            "official": False,
-            "score": percentage,
-            "totalQuestions": len(questions),
-            "percentage": percentage,
-            "questionResults": results,
-            "completedAt": datetime.now(timezone.utc).isoformat(),
-            "evidenceNote": "Descriptive scores are AI-generated estimates; this is not an official university grade.",
-        }
+            percentage = round(total_score / len(questions), 1)
+            marks_obtained = round(total_score / 100, 1)
+            submission_id = str(uuid4())
+            completed_at = datetime.now(timezone.utc).isoformat()
+            topic_scores: dict[str, dict[str, int]] = {}
+            for item in results:
+                topic = item["topic"]
+                stats = topic_scores.setdefault(topic, {"score": 0, "total": 0})
+                stats["total"] += 1
+                stats["score"] += int(bool(item["isCorrect"]))
+            weakest_topic = min(
+                topic_scores,
+                key=lambda name: topic_scores[name]["score"] / topic_scores[name]["total"],
+            )
+            result = {
+                "submissionId": submission_id,
+                "assessmentId": assessment_id,
+                "courseId": course_id,
+                "assessmentTitle": assessment["title"],
+                "courseCode": str(assessment.get("courseCode") or ""),
+                "topics": list(topic_scores),
+                "difficulty": assessment.get("difficulty", "Intermediate"),
+                "aiGenerated": True,
+                "official": False,
+                "score": marks_obtained,
+                "marksObtained": marks_obtained,
+                "maximumScore": len(questions),
+                "totalQuestions": len(questions),
+                "percentage": percentage,
+                "questionResults": results,
+                "topicBreakdown": [
+                    {
+                        "topic": name,
+                        "score": stats["score"],
+                        "total": stats["total"],
+                        "percentage": round(stats["score"] * 100 / stats["total"], 1),
+                    }
+                    for name, stats in topic_scores.items()
+                ],
+                "completedAt": completed_at,
+                "timeSpentSeconds": assessment.get("timeSpentSeconds", 0),
+                "evidenceNote": (
+                    "Descriptive scores are AI-generated estimates; this is not an official university grade."
+                    if assessment.get("format") == "descriptive"
+                    else "This is AI-generated practice and is not an official university grade."
+                ),
+                "recommendedFollowUp": {
+                    "topic": weakest_topic,
+                    "reason": "Review topics with the lowest accuracy before your next assignment.",
+                    "practicePrompt": (
+                        f"I completed the AI practice assignment '{assessment['title']}' "
+                        f"for {assessment.get('courseCode') or 'my course'} and scored {percentage}%. "
+                        f"Help me review these missed topics: "
+                        f"{', '.join(dict.fromkeys(item['topic'] for item in results if not item['isCorrect'])) or weakest_topic}. "
+                        "Explain the concepts using this practice result as learning evidence, not as an official grade."
+                    ),
+                },
+            }
+            graded_record = await self._repository.transition_practice_assessment_state(
+                assessment_id,
+                ["SUBMITTED"],
+                "GRADED",
+                {"result": result, "submissionId": submission_id, "gradedAt": completed_at},
+            )
+            result = graded_record.get("result", result)
+
         await self._repository.save_agent_record(
             "practice_submissions",
-            submission_id,
+            assessment_id,
             {
                 **result,
-                "answers": answers,
+                "answers": assessment.get("submittedAnswers", answers),
                 "courseId": course_id,
                 "assessmentId": assessment_id,
+                "status": "GRADED",
             },
         )
-        await self._repository.record_learning_activity(
-            "ai_practice_assessment_completed",
-            course_id,
+        published_record = await self._repository.transition_practice_assessment_state(
             assessment_id,
+            ["GRADED"],
+            "RESULTS_PUBLISHED",
+            {
+                "resultsPublishedAt": datetime.now(timezone.utc).isoformat(),
+                "learningAnalysisStatus": "LEARNING_ANALYSIS_PENDING",
+            },
         )
-        mastery = await self._knowledge_tracing.update_from_responses(
-            course_id,
-            assessment_id,
-            tracing_evidence,
+        published_result = published_record.get("result")
+        if not isinstance(published_result, dict):
+            raise ProviderError("The graded practice assignment could not be published.")
+        return {
+            **published_result,
+            "status": published_record.get("status"),
+            "learningAnalysisStatus": published_record.get("learningAnalysisStatus"),
+        }
+
+
+class AssignmentLearningAgent:
+    name = "assignment_learning"
+    minimum_mastery_evidence = 3
+
+    def __init__(self, repository: SupabaseLearningRepository) -> None:
+        self._repository = repository
+
+    @staticmethod
+    def _is_published(record: dict[str, Any]) -> bool:
+        return _is_published_practice_assessment(record)
+
+    async def _completed_records(self) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+        student_data = await self._repository.get_student_data()
+        courses = {
+            str(course["id"]): course
+            for course in student_data["courses"]
+            if isinstance(course, dict) and course.get("id")
+        }
+        records = await self._repository.list_agent_records("practice_assessments", 1000)
+        completed = [
+            record
+            for record in records
+            if isinstance(record, dict)
+            and self._is_published(record)
+            and str(record.get("courseId") or "") in courses
+        ]
+        completed.sort(
+            key=lambda record: str(
+                record.get("result", {}).get("completedAt")
+                or record.get("createdAt")
+                or ""
+            )
         )
-        result["masteryUpdates"] = mastery
-        return result
+        return completed, courses
+
+    @staticmethod
+    def _card(
+        record: dict[str, Any],
+        course: dict[str, Any],
+        assignment_number: int,
+    ) -> dict[str, Any]:
+        result = record["result"]
+        subject = str(record.get("subject") or course.get("title") or course.get("code") or "")
+        return {
+            "id": record["id"],
+            "assignmentNumber": assignment_number,
+            "name": str(record.get("title") or "Practice assignment"),
+            "displayName": f"Assignment {assignment_number} — {subject}",
+            "subject": subject,
+            "courseId": record.get("courseId"),
+            "courseCode": str(record.get("courseCode") or course.get("code") or ""),
+            "topics": list(record.get("topics") or result.get("topics") or []),
+            "completionDate": result.get("completedAt"),
+            "score": result.get("marksObtained", result.get("score", 0)),
+            "maximumScore": result.get("maximumScore", result.get("totalQuestions", 0)),
+            "percentage": result.get("percentage", 0),
+            "completionStatus": record.get("status"),
+            "learningAnalysisStatus": record.get("learningAnalysisStatus") or "LEARNING_ANALYSIS_PENDING",
+            "difficulty": record.get("difficulty", "Intermediate"),
+            "totalQuestions": result.get("totalQuestions", 0),
+        }
+
+    @staticmethod
+    def _analyze(
+        records: list[dict[str, Any]],
+        courses: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        course_records = courses or {}
+        topic_evidence: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        difficulty_evidence: dict[str, dict[str, int]] = {}
+        correct_count = 0
+        question_count = 0
+        for assignment in records:
+            difficulty = str(assignment.get("difficulty") or "Intermediate")
+            difficulty_stats = difficulty_evidence.setdefault(difficulty, {"correct": 0, "attempted": 0})
+            for question in assignment.get("result", {}).get("questionResults", []):
+                if not isinstance(question, dict) or not isinstance(question.get("isCorrect"), bool):
+                    continue
+                topic = str(question.get("topic") or "Uncategorized").strip() or "Uncategorized"
+                course_id = str(assignment.get("courseId") or "")
+                course = course_records.get(course_id, {})
+                item = {
+                    "assignmentId": assignment["id"],
+                    "topic": topic,
+                    "courseId": course_id or None,
+                    "courseCode": str(assignment.get("courseCode") or course.get("code") or ""),
+                    "completedAt": assignment.get("result", {}).get("completedAt"),
+                    "correct": question["isCorrect"],
+                }
+                topic_evidence.setdefault((course_id, topic.casefold()), []).append(item)
+                question_count += 1
+                correct_count += int(question["isCorrect"])
+                difficulty_stats["attempted"] += 1
+                difficulty_stats["correct"] += int(question["isCorrect"])
+
+        topic_reports = []
+        for (course_id, _), evidence in sorted(
+            topic_evidence.items(),
+            key=lambda item: (
+                item[1][0]["courseCode"].casefold(),
+                item[1][0]["topic"].casefold(),
+            ),
+        ):
+            topic = str(evidence[0].get("topic") or "")
+            attempts = len(evidence)
+            correct = sum(int(item["correct"]) for item in evidence)
+            accuracy = round(correct * 100 / attempts, 1)
+            assignment_results: dict[str, dict[str, int]] = {}
+            for item in evidence:
+                stats = assignment_results.setdefault(item["assignmentId"], {"correct": 0, "attempted": 0})
+                stats["attempted"] += 1
+                stats["correct"] += int(item["correct"])
+            ordered_assignments = sorted(
+                assignment_results.items(),
+                key=lambda item: next(
+                    (entry["completedAt"] or "" for entry in evidence if entry["assignmentId"] == item[0]),
+                    "",
+                ),
+            )
+            improvement = None
+            if len(ordered_assignments) >= 2:
+                first = ordered_assignments[0][1]
+                latest = ordered_assignments[-1][1]
+                improvement = round(
+                    latest["correct"] * 100 / latest["attempted"]
+                    - first["correct"] * 100 / first["attempted"],
+                    1,
+                )
+            topic_reports.append({
+                "topic": topic,
+                "courseId": course_id or None,
+                "courseCode": evidence[0]["courseCode"],
+                "attempts": attempts,
+                "correct": correct,
+                "accuracy": accuracy,
+                "estimatedMastery": accuracy if attempts >= AssignmentLearningAgent.minimum_mastery_evidence else None,
+                "evidenceStatus": (
+                    "MEASURED"
+                    if attempts >= AssignmentLearningAgent.minimum_mastery_evidence
+                    else "INSUFFICIENT_EVIDENCE"
+                ),
+                "assignmentCount": len(assignment_results),
+                "repeatedIncorrectAnswers": sum(not item["correct"] for item in evidence),
+                "improvementAcrossAssignments": improvement,
+            })
+
+        total_assignments = len(records)
+        return {
+            "totalAssignmentsCompleted": total_assignments,
+            "totalQuestionsAttempted": question_count,
+            "correctAnswers": correct_count,
+            "overallAccuracy": round(correct_count * 100 / question_count, 1) if question_count else None,
+            "overallTopicMastery": topic_reports,
+            "topicsRequiringImprovement": [
+                topic for topic in topic_reports
+                if topic["accuracy"] < 70 or topic["evidenceStatus"] == "INSUFFICIENT_EVIDENCE"
+            ],
+            "strengths": [
+                topic for topic in topic_reports
+                if topic["accuracy"] >= 80 and topic["evidenceStatus"] == "MEASURED"
+            ],
+            "repeatedIncorrectTopics": [
+                topic for topic in topic_reports if topic["repeatedIncorrectAnswers"] >= 2
+            ],
+            "difficultyPerformance": [
+                {
+                    "difficulty": difficulty,
+                    "attempted": stats["attempted"],
+                    "correct": stats["correct"],
+                    "accuracy": round(stats["correct"] * 100 / stats["attempted"], 1),
+                }
+                for difficulty, stats in sorted(difficulty_evidence.items())
+            ],
+            "personalizedLearningPlan": [
+                {
+                    "topic": topic["topic"],
+                    "courseId": topic["courseId"],
+                    "courseCode": topic["courseCode"],
+                    "priority": "high" if topic["accuracy"] < 50 else "medium",
+                    "action": (
+                        "Complete more questions on this topic to build reliable evidence."
+                        if topic["evidenceStatus"] == "INSUFFICIENT_EVIDENCE"
+                        else "Review course materials, then practice this topic again."
+                    ),
+                    "reason": (
+                        f"{topic['accuracy']}% measured accuracy across {topic['attempts']} questions."
+                    ),
+                    "evidenceStatus": topic["evidenceStatus"],
+                }
+                for topic in topic_reports
+                if topic["accuracy"] < 70 or topic["evidenceStatus"] == "INSUFFICIENT_EVIDENCE"
+            ],
+            "evidenceNote": (
+                "Performance is measured from published, backend-graded assignments. "
+                "Mastery estimates are withheld until a topic has at least three answered questions."
+            ),
+        }
+
+    async def history(self) -> dict[str, Any]:
+        records, courses = await self._completed_records()
+        cards = [
+            self._card(record, courses[str(record["courseId"])], index + 1)
+            for index, record in enumerate(records)
+        ]
+        return {
+            "overview": self._analyze(records, courses),
+            "completedAssignments": cards,
+        }
+
+    async def assignment_detail(self, assessment_id: str) -> dict[str, Any] | None:
+        record = await self._repository.get_agent_record("practice_assessments", assessment_id)
+        if not record or not self._is_published(record):
+            return None
+        student_data = await self._repository.get_student_data(str(record.get("courseId") or ""))
+        course = next(
+            (
+                item for item in student_data["courses"]
+                if str(item.get("id")) == str(record.get("courseId"))
+            ),
+            None,
+        )
+        if not course:
+            return None
+        completed, _ = await self._completed_records()
+        position = next((index + 1 for index, item in enumerate(completed) if item["id"] == assessment_id), None)
+        if position is None:
+            return None
+        card = self._card(record, course, position)
+        individual = self._analyze([record], {str(record["courseId"]): course})
+        return {
+            "assignment": card,
+            "details": {
+                "totalQuestions": record["result"]["totalQuestions"],
+                "correctAnswers": sum(
+                    item["isCorrect"] is True
+                    for item in record["result"]["questionResults"]
+                ),
+                "incorrectAnswers": sum(
+                    item["isCorrect"] is False
+                    for item in record["result"]["questionResults"]
+                ),
+                "marksObtained": record["result"].get("marksObtained", record["result"].get("score", 0)),
+                "maximumScore": record["result"].get("maximumScore", record["result"]["totalQuestions"]),
+                "percentage": record["result"]["percentage"],
+                "topicPerformance": record["result"].get("topicBreakdown", []),
+                "questionResults": record["result"]["questionResults"],
+                "difficultyPerformance": individual["difficultyPerformance"],
+                "strengths": individual["strengths"],
+                "weaknesses": individual["topicsRequiringImprovement"],
+            },
+        }
+
+    async def analyze_completed_assignment(self, assessment_id: str) -> dict[str, Any]:
+        record = await self._repository.get_agent_record("practice_assessments", assessment_id)
+        if not record or not self._is_published(record):
+            return {"status": "NOT_ELIGIBLE"}
+        if record.get("learningAnalysisStatus") == "LEARNING_ANALYSIS_COMPLETED":
+            return {"status": "LEARNING_ANALYSIS_COMPLETED"}
+        try:
+            await self._repository.transition_practice_assessment_state(
+                assessment_id,
+                ["RESULTS_PUBLISHED"],
+                "RESULTS_PUBLISHED",
+                {"learningAnalysisStatus": "LEARNING_ANALYSIS_PENDING"},
+            )
+            completed, _ = await self._completed_records()
+            student_data = await self._repository.get_student_data()
+            courses = {
+                str(course["id"]): course
+                for course in student_data["courses"]
+                if isinstance(course, dict) and course.get("id")
+            }
+            analysis = self._analyze(completed, courses)
+            await self._repository.transition_practice_assessment_state(
+                assessment_id,
+                ["RESULTS_PUBLISHED"],
+                "RESULTS_PUBLISHED",
+                {
+                    "learningAnalysisStatus": "LEARNING_ANALYSIS_COMPLETED",
+                    "learningAnalysis": analysis,
+                    "learningAnalysisUpdatedAt": datetime.now(timezone.utc).isoformat(),
+                    "learningAnalysisError": None,
+                },
+            )
+            return {"status": "LEARNING_ANALYSIS_COMPLETED", "analysis": analysis}
+        except Exception as error:
+            try:
+                await self._repository.transition_practice_assessment_state(
+                    assessment_id,
+                    ["RESULTS_PUBLISHED"],
+                    "RESULTS_PUBLISHED",
+                    {
+                        "learningAnalysisStatus": "LEARNING_ANALYSIS_FAILED",
+                        "learningAnalysisError": "Analysis could not be completed. Retry it.",
+                        "learningAnalysisUpdatedAt": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+            except Exception as state_error:
+                logging.getLogger(__name__).error(
+                    "Could not persist failed assignment learning-analysis status (%s).",
+                    type(state_error).__name__,
+                )
+
+            logging.getLogger(__name__).warning(
+                "Assignment learning analysis failed (%s).",
+                type(error).__name__,
+            )
+            return {
+                "status": "LEARNING_ANALYSIS_FAILED",
+                "message": "Analysis could not be completed. Retry it.",
+            }
 
 
 @dataclass(frozen=True)
@@ -763,6 +1285,7 @@ class LearningAgentServices:
     recommendation: RecommendationAgent
     explainability: ExplainabilityAgent
     assessment: AssessmentAgent
+    assignment_learning: AssignmentLearningAgent
 
 
 def create_learning_agent_services(
@@ -780,4 +1303,5 @@ def create_learning_agent_services(
         recommendation=RecommendationAgent(repository, knowledge_graph),
         explainability=ExplainabilityAgent(),
         assessment=AssessmentAgent(provider, settings, repository, knowledge_tracing),
+        assignment_learning=AssignmentLearningAgent(repository),
     )

@@ -37,6 +37,9 @@ class SupabaseLearningRepository:
     def _supabase(self):
         return self._client or create_user_supabase_client(self._settings, self._access_token)
 
+    def _admin_supabase(self):
+        return self._client or create_admin_supabase_client(self._settings)
+
     @staticmethod
     def _run_query(query):
         try:
@@ -360,6 +363,26 @@ class SupabaseLearningRepository:
     ) -> None:
         if collection_name not in AGENT_RECORD_TYPES:
             raise ValueError("Unsupported learning record type.")
+        if collection_name == "practice_assessments":
+            if merge:
+                raise ValueError("Practice assignments cannot be updated outside lifecycle transitions.")
+            course_id = data.get("courseId")
+            if not isinstance(course_id, str) or not course_id:
+                raise ValueError("Practice assignments require an authorized course.")
+            response = self._run_query(
+                self._admin_supabase().rpc(
+                    "create_practice_assessment",
+                    {
+                        "target_owner_id": self._user_id,
+                        "target_assessment_id": record_id,
+                        "target_course_id": course_id,
+                        "assessment_payload": data,
+                    },
+                )
+            )
+            if not isinstance(response, dict):
+                raise ServiceUnavailableError("Supabase returned an invalid generated assignment.")
+            return
         client = self._supabase()
         payload = dict(data)
         if merge:
@@ -392,6 +415,44 @@ class SupabaseLearningRepository:
             raise ValueError("Learning records require a stable record ID.")
         await asyncio.to_thread(self._save_agent_record, collection_name, record_id, data, merge)
         return record_id
+
+    def _transition_practice_assessment_state(
+        self,
+        assessment_id: str,
+        expected_statuses: list[str],
+        next_status: str,
+        payload_patch: dict[str, Any],
+    ) -> dict[str, Any]:
+        response = self._run_query(
+            self._admin_supabase().rpc(
+                "transition_practice_assessment_state",
+                {
+                    "target_owner_id": self._user_id,
+                    "target_assessment_id": assessment_id,
+                    "expected_statuses": expected_statuses,
+                    "next_status": next_status,
+                    "payload_patch": payload_patch,
+                },
+            )
+        )
+        if not isinstance(response, dict):
+            raise ServiceUnavailableError("Supabase returned an invalid assignment state.")
+        return response
+
+    async def transition_practice_assessment_state(
+        self,
+        assessment_id: str,
+        expected_statuses: list[str],
+        next_status: str,
+        payload_patch: dict[str, Any],
+    ) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            self._transition_practice_assessment_state,
+            assessment_id,
+            expected_statuses,
+            next_status,
+            payload_patch,
+        )
 
     def _record_learning_activity(self, activity_type: str, course_id: str, assessment_id: str) -> None:
         self._run_query(

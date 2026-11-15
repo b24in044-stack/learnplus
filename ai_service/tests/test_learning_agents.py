@@ -1,6 +1,7 @@
 import asyncio
 import json
 from copy import deepcopy
+from uuid import uuid4
 
 import pytest
 from pydantic import SecretStr
@@ -10,6 +11,7 @@ from ai_service.app.agents.learning import (
     ExplainabilityAgent,
     KnowledgeGraphAgent,
     KnowledgeTracingAgent,
+    AssignmentLearningAgent,
     LearningAnalyticsAgent,
     RecommendationAgent,
     StudentModelingAgent,
@@ -27,6 +29,7 @@ class FakeLearningRepository:
     def __init__(self, user_id="student-1"):
         self.user_id = user_id
         self.records = {}
+        self.fail_assignment_listing = False
         self.data = {
             "profile": {"learningPreferences": ["visual examples"]},
             "enrollments": [{"studentUid": user_id, "courseId": "course-1"}],
@@ -74,6 +77,8 @@ class FakeLearningRepository:
         return deepcopy({"id": record_id, **record})
 
     async def list_agent_records(self, collection_name, limit=500):
+        if collection_name == "practice_assessments" and self.fail_assignment_listing:
+            raise ServiceUnavailableError("Assignment history is unavailable.")
         records = self.records.get(collection_name, {})
         return [
             {"id": key, **deepcopy(value)}
@@ -86,6 +91,35 @@ class FakeLearningRepository:
         old = collection.get(record_id, {}) if merge else {}
         collection[record_id] = {**old, **deepcopy(data), "ownerUid": self.user_id}
         return record_id
+
+    async def transition_practice_assessment_state(
+        self,
+        assessment_id,
+        expected_statuses,
+        next_status,
+        payload_patch,
+    ):
+        record = self.records["practice_assessments"].get(assessment_id)
+        if not record or record.get("ownerUid") != self.user_id:
+            raise LookupError("Practice assignment is not accessible.")
+        current_status = record.get("status", "GENERATED")
+        if current_status != next_status and current_status not in expected_statuses:
+            raise ValueError("Practice assignment status transition is not allowed.")
+        if current_status == "SUBMITTED" and next_status == "SUBMITTED":
+            if record.get("submittedAnswers") != payload_patch.get("submittedAnswers"):
+                raise ValueError("This assignment was submitted with different answers.")
+        if current_status == next_status == "IN_PROGRESS":
+            record.update(deepcopy(payload_patch))
+        elif current_status == "IN_PROGRESS" and next_status == "SUBMITTED":
+            record.pop("draftAnswers", None)
+            record.pop("unansweredQuestionIds", None)
+            record.update(deepcopy(payload_patch))
+        elif current_status != next_status or next_status == "RESULTS_PUBLISHED":
+            record.update(deepcopy(payload_patch))
+            record["status"] = next_status
+        if current_status != next_status:
+            record["status"] = next_status
+        return deepcopy(record)
 
     async def record_mastery_evidence(self, concept_id, concept_title, correct, course_id, source_id):
         await self.get_student_data(course_id)
@@ -210,20 +244,77 @@ async def test_knowledge_tracing_uses_documented_beta_evidence_update():
 @pytest.mark.asyncio
 async def test_learning_analytics_keeps_verified_marks_separate_from_practice_estimates():
     agents, repository, _ = build_agents()
-    repository.records["practice_submissions"] = {
+    repository.records["practice_assessments"] = {
         "practice-1": {
             "ownerUid": repository.user_id,
             "courseId": "course-1",
-            "percentage": 40,
+            "status": "RESULTS_PUBLISHED",
+            "result": {
+                "percentage": 40,
+                "totalQuestions": 1,
+                "questionResults": [{"isCorrect": False}],
+            },
         },
+        "practice-unpublished": {
+            "ownerUid": repository.user_id,
+            "courseId": "course-1",
+            "status": "GRADED",
+            "result": {
+                "percentage": 100,
+                "totalQuestions": 1,
+                "questionResults": [{"isCorrect": True}],
+            },
+        },
+    }
+    repository.records["practice_submissions"] = {
+        "legacy-practice": {"ownerUid": repository.user_id, "courseId": "course-1", "percentage": 99},
     }
 
     result = await agents.learning_analytics.analyze("course-1")
 
+    assert result["aiPractice"]["attemptCount"] == 1
     assert result["aiPractice"]["averageScore"] == 40
     assert result["verifiedAcademicMarks"][0]["score"] == 87
     assert result["verifiedAcademicMarks"][0]["source"] == "verified_subject_marks"
     assert result["estimatedConceptMastery"] == []
+
+
+def test_assignment_topic_analytics_keeps_identically_named_topics_course_scoped():
+    first = {
+        "id": "assignment-1",
+        "courseId": "course-1",
+        "difficulty": "Intermediate",
+        "result": {
+            "completedAt": "2026-11-15T08:00:00Z",
+            "questionResults": [{"topic": "Normalization", "isCorrect": True}],
+        },
+    }
+    second = {
+        "id": "assignment-2",
+        "courseId": "course-2",
+        "difficulty": "Intermediate",
+        "result": {
+            "completedAt": "2026-11-16T08:00:00Z",
+            "questionResults": [{"topic": "Normalization", "isCorrect": False}],
+        },
+    }
+
+    analysis = AssignmentLearningAgent._analyze(
+        [first, second],
+        {
+            "course-1": {"code": "DBMS"},
+            "course-2": {"code": "Data Structures"},
+        },
+    )
+
+    assert len(analysis["overallTopicMastery"]) == 2
+    assert {
+        (topic["courseId"], topic["courseCode"], topic["accuracy"])
+        for topic in analysis["overallTopicMastery"]
+    } == {
+        ("course-1", "DBMS", 100.0),
+        ("course-2", "Data Structures", 0.0),
+    }
 
 
 @pytest.mark.asyncio
@@ -262,16 +353,102 @@ async def test_assessment_agent_generates_private_answer_key_and_grades_practice
     assert "answer_index" not in question
     assert saved["questions"][0]["answer_index"] == 0
 
+    await agents.assessment.start(generated["assessmentId"])
     result = await agents.assessment.evaluate(generated["assessmentId"], {question["id"]: 1})
 
     assert result["percentage"] == 0
     assert result["official"] is False
     assert result["questionResults"][0]["score"] == 0
-    assert "correctOption" not in result["questionResults"][0]
-    assert repository.records["activity_log"][generated["assessmentId"]]["activityType"] == "ai_practice_assessment_completed"
-    assert repository.records["concept_mastery"]["loops"]["masteryScore"] == 40
+    assert result["questionResults"][0]["correctOption"] == 0
+    assert result["questionResults"][0]["selectedAnswer"] == "class"
+    assert result["status"] == "RESULTS_PUBLISHED"
+    assert repository.records["practice_assessments"][generated["assessmentId"]]["learningAnalysisStatus"] == "LEARNING_ANALYSIS_PENDING"
 
 
+@pytest.mark.asyncio
+async def test_assignment_submission_requires_all_answers_and_is_retry_safe():
+    agents, repository, _ = build_agents()
+    generated = await agents.assessment.generate(
+        "course-1",
+        None,
+        "Beginner",
+        [],
+        1,
+        "mcq",
+        topics=[],
+    )
+    question = generated["questions"][0]
+    await agents.assessment.start(generated["assessmentId"])
+
+    with pytest.raises(ValueError, match="Answer every question"):
+        await agents.assessment.evaluate(generated["assessmentId"], {})
+    draft = repository.records["practice_assessments"][generated["assessmentId"]]
+    assert draft["status"] == "IN_PROGRESS"
+    assert draft["draftAnswers"] == {}
+    assert draft["unansweredQuestionIds"] == [question["id"]]
+    assert "submittedAnswers" not in draft
+    assert (await agents.assignment_learning.history())["completedAssignments"] == []
+
+    result = await agents.assessment.evaluate(generated["assessmentId"], {question["id"]: 0})
+    retried = await agents.assessment.evaluate(generated["assessmentId"], {question["id"]: 0})
+
+    assert result["submissionId"] == retried["submissionId"]
+    completed = repository.records["practice_assessments"][generated["assessmentId"]]
+    assert completed["status"] == "RESULTS_PUBLISHED"
+    assert "draftAnswers" not in completed
+    assert "unansweredQuestionIds" not in completed
+    assert len(repository.records["practice_submissions"]) == 1
+    with pytest.raises(ValueError, match="different answers"):
+        await agents.assessment.evaluate(generated["assessmentId"], {question["id"]: 1})
+
+
+@pytest.mark.asyncio
+async def test_learning_analysis_failure_preserves_published_assignment_and_can_retry():
+    agents, repository, _ = build_agents()
+    generated = await agents.assessment.generate(
+        "course-1", "Loops", "Intermediate", [], 1, "mcq",
+    )
+    question = generated["questions"][0]
+    await agents.assessment.start(generated["assessmentId"])
+    result = await agents.assessment.evaluate(generated["assessmentId"], {question["id"]: 0})
+
+    repository.fail_assignment_listing = True
+    failed = await agents.assignment_learning.analyze_completed_assignment(generated["assessmentId"])
+    assert failed["status"] == "LEARNING_ANALYSIS_FAILED"
+    assert repository.records["practice_assessments"][generated["assessmentId"]]["result"]["submissionId"] == result["submissionId"]
+
+    repository.fail_assignment_listing = False
+    retried = await agents.assignment_learning.analyze_completed_assignment(generated["assessmentId"])
+    assert retried["status"] == "LEARNING_ANALYSIS_COMPLETED"
+    assert repository.records["practice_assessments"][generated["assessmentId"]]["status"] == "RESULTS_PUBLISHED"
+
+
+@pytest.mark.asyncio
+async def test_learning_history_excludes_unpublished_records_and_detail_is_assignment_scoped():
+    agents, repository, _ = build_agents()
+    unfinished_id = str(uuid4())
+    repository.records["practice_assessments"] = {
+        unfinished_id: {
+            "ownerUid": repository.user_id,
+            "courseId": "course-1",
+            "status": "GRADED",
+            "result": {"totalQuestions": 1, "questionResults": [{"isCorrect": True}]},
+        },
+    }
+
+    assert (await agents.assignment_learning.history())["completedAssignments"] == []
+
+    generated = await agents.assessment.generate(
+        "course-1", "Loops", "Intermediate", [], 1, "mcq",
+    )
+    question = generated["questions"][0]
+    await agents.assessment.start(generated["assessmentId"])
+    await agents.assessment.evaluate(generated["assessmentId"], {question["id"]: 0})
+    detail = await agents.assignment_learning.assignment_detail(generated["assessmentId"])
+
+    assert detail["assignment"]["assignmentNumber"] == 1
+    assert detail["details"]["totalQuestions"] == 1
+    assert len(detail["details"]["questionResults"]) == 1
 @pytest.mark.asyncio
 async def test_assessment_agent_generates_and_grades_descriptive_practice():
     class DescriptiveProvider(FakeProvider):
@@ -317,13 +494,16 @@ async def test_assessment_agent_generates_and_grades_descriptive_practice():
     assert "rubric" not in question
     assert saved_assessment["questions"][0]["reference_answer"]
 
+    await agents.assessment.start(generated["assessmentId"])
     result = await agents.assessment.evaluate(generated["assessmentId"], {
         question["id"]: "The loop exits when the condition becomes false.",
     })
 
     assert result["questionResults"][0]["score"] == 80
     assert "not an official" in result["evidenceNote"]
-    assert repository.records["concept_mastery"]["loops"]["evidenceCount"] == 1
+    analyzed = await agents.assignment_learning.analyze_completed_assignment(generated["assessmentId"])
+    assert analyzed["status"] == "LEARNING_ANALYSIS_COMPLETED"
+    assert repository.records["practice_assessments"][generated["assessmentId"]]["status"] == "RESULTS_PUBLISHED"
 
 
 @pytest.mark.asyncio
@@ -482,6 +662,12 @@ def test_authenticated_coordinator_routes_real_multi_agent_workflows():
     assessment = generated.json()["data"]
     question = assessment["questions"][0]
     assert "answer_index" not in question
+    started = client.post(
+        f"/api/v1/agents/assessments/{assessment['assessmentId']}/start",
+        headers=headers,
+    )
+    assert started.status_code == 200
+    assert started.json()["status"] == "IN_PROGRESS"
 
     evaluated = client.post(
         f"/api/v1/agents/assessments/{assessment['assessmentId']}/submit",
@@ -491,11 +677,21 @@ def test_authenticated_coordinator_routes_real_multi_agent_workflows():
     assert evaluated.status_code == 200, evaluated.text
     assert [step["agent_id"] for step in evaluated.json()["agent_steps"]] == [
         "assessment",
-        "learning_analytics",
-        "recommendation",
         "explainability",
     ]
     assert evaluated.json()["data"]["official"] is False
+    assert evaluated.json()["data"]["status"] == "RESULTS_PUBLISHED"
+
+    history = client.get("/api/v1/agents/learning/assignments", headers=headers)
+    assert history.status_code == 200, history.text
+    assert history.json()["overview"]["totalAssignmentsCompleted"] == 1
+    assert history.json()["completedAssignments"][0]["assignmentNumber"] == 1
+    detail = client.get(
+        f"/api/v1/agents/learning/assignments/{assessment['assessmentId']}",
+        headers=headers,
+    )
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["details"]["totalQuestions"] == 1
 
 
 def test_coordinator_rejects_missing_auth_foreign_enrollment_and_client_uid():

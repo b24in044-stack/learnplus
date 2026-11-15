@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { AnalyticsData, Course } from '../../types';
 import { api } from '../../services/api';
+import { useAuth } from '../../context/AuthContext';
 import { NavTab } from '../layout/Sidebar';
 import { Card } from '../ui/Card';
 import { Badge } from '../ui/Badge';
@@ -36,16 +37,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export const LearningAnalytics: React.FC<LearningAnalyticsProps> = ({ courses, onNavigate }) => {
+  const { role } = useAuth();
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
   const [agentRecommendations, setAgentRecommendations] = useState<AgentRecommendation[]>([]);
   const [recommendationError, setRecommendationError] = useState<string | null>(null);
   const [selectedFilter, setSelectedFilter] = useState<'all' | 'needs_practice'>('all');
+  const [selectedFacultyCourseId, setSelectedFacultyCourseId] = useState(courses[0]?.id ?? '');
+  const [facultyRoster, setFacultyRoster] = useState<Awaited<ReturnType<typeof api.getFacultyCourseRoster>>>([]);
+  const [facultyRosterLoading, setFacultyRosterLoading] = useState(true);
+  const [facultyRosterError, setFacultyRosterError] = useState<string | null>(null);
+  const [facultyRosterFilter, setFacultyRosterFilter] = useState<'all' | 'needs_support' | 'no_assessment'>('all');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
 
   useEffect(() => {
     let active = true;
+    if (role !== 'student') {
+      setIsLoading(false);
+      return () => {
+        active = false;
+      };
+    }
     const loadData = async () => {
       setIsLoading(true);
       setError(null);
@@ -64,13 +77,13 @@ export const LearningAnalytics: React.FC<LearningAnalyticsProps> = ({ courses, o
     return () => {
       active = false;
     };
-  }, [loadAttempt]);
+  }, [loadAttempt, role]);
 
   useEffect(() => {
     let active = true;
     setAgentRecommendations([]);
     setRecommendationError(null);
-    if (courses.length === 0) return () => { active = false; };
+    if (role !== 'student' || courses.length === 0) return () => { active = false; };
 
     void api.getAgentRecommendations().then((workflow) => {
       if (!active) return;
@@ -103,7 +116,178 @@ export const LearningAnalytics: React.FC<LearningAnalyticsProps> = ({ courses, o
     return () => {
       active = false;
     };
-  }, [courses.length, loadAttempt]);
+  }, [courses.length, loadAttempt, role]);
+
+  useEffect(() => {
+    if (!courses.some((course) => course.id === selectedFacultyCourseId)) {
+      setSelectedFacultyCourseId(courses[0]?.id ?? '');
+    }
+  }, [courses, selectedFacultyCourseId]);
+
+  useEffect(() => {
+    let active = true;
+    if (role !== 'instructor') return () => { active = false; };
+    if (!selectedFacultyCourseId) {
+      setFacultyRoster([]);
+      setFacultyRosterError(null);
+      setFacultyRosterLoading(false);
+      return () => { active = false; };
+    }
+
+    setFacultyRosterLoading(true);
+    setFacultyRosterError(null);
+    void api.getFacultyCourseRoster(selectedFacultyCourseId).then((roster) => {
+      if (active) setFacultyRoster(roster);
+    }).catch((loadError: unknown) => {
+      if (active) {
+        setFacultyRosterError(
+          loadError instanceof Error ? loadError.message : 'Course reports could not be loaded.'
+        );
+      }
+    }).finally(() => {
+      if (active) setFacultyRosterLoading(false);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [loadAttempt, role, selectedFacultyCourseId]);
+
+  if (role === 'instructor') {
+    const selectedCourse = courses.find((course) => course.id === selectedFacultyCourseId);
+    const scoredRoster = facultyRoster.flatMap((student) => {
+      const score = Number.parseFloat(student.score.replace('%', ''));
+      return Number.isFinite(score) ? [{ ...student, numericScore: score }] : [];
+    });
+    const averageScore = scoredRoster.length
+      ? Math.round(scoredRoster.reduce((total, student) => total + student.numericScore, 0) / scoredRoster.length)
+      : null;
+    const supportCount = facultyRoster.filter((student) => student.status.toLowerCase().includes('support')).length;
+    const visibleRoster = facultyRoster.filter((student) => {
+      if (facultyRosterFilter === 'needs_support') return student.status.toLowerCase().includes('support');
+      if (facultyRosterFilter === 'no_assessment') return !Number.isFinite(Number.parseFloat(student.score.replace('%', '')));
+      return true;
+    });
+
+    return (
+      <div className="p-6 md:p-8 max-w-7xl mx-auto space-y-6">
+        <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-widest text-[#4338CA]">Reports &amp; Analytics</p>
+            <h1 className="mt-2 text-2xl font-bold text-slate-900">Faculty Course Reports</h1>
+            <p className="mt-1 text-sm text-slate-600">Course-scoped enrollment and assessment summaries.</p>
+          </div>
+          <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
+            Course
+            <select
+              aria-label="Course report"
+              value={selectedFacultyCourseId}
+              onChange={(event) => setSelectedFacultyCourseId(event.target.value)}
+              className="min-w-64 rounded-lg border border-slate-300 bg-white px-3 py-2"
+              disabled={courses.length === 0}
+            >
+              {courses.map((course) => (
+                <option key={course.id} value={course.id}>{course.code} · {course.title}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        {facultyRosterLoading ? (
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+            <LoadingSkeleton className="h-24 w-full rounded-xl" count={4} />
+          </div>
+        ) : facultyRosterError ? (
+          <ErrorState
+            title="Course reports unavailable"
+            message={facultyRosterError}
+            onRetry={() => setLoadAttempt((attempt) => attempt + 1)}
+          />
+        ) : !selectedCourse ? (
+          <EmptyState
+            icon={<BarChart3 className="w-6 h-6" />}
+            title="No Assigned Courses"
+            description="Course reports are available for courses assigned to your faculty account."
+          />
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+              <Card className="p-5">
+                <p className="text-sm text-slate-500">Enrolled students</p>
+                <p className="mt-2 text-2xl font-bold text-slate-900">{facultyRoster.length}</p>
+              </Card>
+              <Card className="p-5">
+                <p className="text-sm text-slate-500">Students with scores</p>
+                <p className="mt-2 text-2xl font-bold text-slate-900">{scoredRoster.length}</p>
+              </Card>
+              <Card className="p-5">
+                <p className="text-sm text-slate-500">Cohort mean score</p>
+                <p className="mt-2 text-2xl font-bold text-slate-900">{averageScore === null ? '—' : `${averageScore}%`}</p>
+              </Card>
+              <Card className="p-5">
+                <p className="text-sm text-slate-500">Flagged for support</p>
+                <p className="mt-2 text-2xl font-bold text-slate-900">{supportCount}</p>
+              </Card>
+            </div>
+
+            <Card className="overflow-hidden">
+              <div className="flex flex-col gap-3 border-b border-slate-100 p-5 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h2 className="font-semibold text-slate-900">{selectedCourse.code} · {selectedCourse.title}</h2>
+                  <p className="mt-1 text-sm text-slate-500">Student progress available to this course&apos;s assigned faculty.</p>
+                </div>
+                <label className="flex items-center gap-2 text-sm text-slate-600">
+                  Filter
+                  <select
+                    aria-label="Filter course report"
+                    value={facultyRosterFilter}
+                    onChange={(event) => setFacultyRosterFilter(event.target.value as typeof facultyRosterFilter)}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2"
+                  >
+                    <option value="all">All students</option>
+                    <option value="needs_support">Needs support</option>
+                    <option value="no_assessment">No assessment score</option>
+                  </select>
+                </label>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[720px] text-left text-sm">
+                  <thead className="bg-slate-50 text-xs uppercase text-slate-500">
+                    <tr>
+                      <th className="px-5 py-3 font-semibold">Student</th>
+                      <th className="px-5 py-3 font-semibold">Mean score</th>
+                      <th className="px-5 py-3 font-semibold">Status</th>
+                      <th className="px-5 py-3 font-semibold">Weak area</th>
+                      <th className="px-5 py-3 font-semibold">Last activity</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {visibleRoster.map((student) => (
+                      <tr key={student.id}>
+                        <td className="px-5 py-4">
+                          <div className="font-medium text-slate-900">{student.name}</div>
+                          <div className="text-xs text-slate-500">{student.email}</div>
+                        </td>
+                        <td className="px-5 py-4 text-slate-700">{student.score}</td>
+                        <td className="px-5 py-4 text-slate-700">{student.status}</td>
+                        <td className="px-5 py-4 text-slate-700">{student.weakArea}</td>
+                        <td className="px-5 py-4 text-slate-700">{student.lastActive}</td>
+                      </tr>
+                    ))}
+                    {visibleRoster.length === 0 && (
+                      <tr>
+                        <td colSpan={5} className="px-5 py-8 text-center text-slate-500">No students match this filter.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          </>
+        )}
+      </div>
+    );
+  }
 
   if (isLoading) {
     return (

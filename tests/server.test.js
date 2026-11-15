@@ -6,12 +6,16 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import ExcelJS from 'exceljs';
 import {
   gradeAssessmentQuestions,
   handleApiRequest,
   publicAssessmentQuestion,
   publicAssessmentQuestionResult,
   getFacultyRosterProfile,
+  loadAttendanceRosterFromDatabase,
+  parseAttendanceUpload,
+  validateAttendanceRecords,
   validateCourseMaterialCategory,
   validateCourseMaterialFile,
   createCourseMaterialObjectPath,
@@ -64,6 +68,254 @@ test('course material validation enforces stable categories and the existing fil
     mimetype: 'application/pdf',
     buffer: oversizedPdf,
   }), /between 1 byte and 10 MB/);
+});
+
+test('attendance CSV preview matches the enrolled roster and reports invalid, unknown, and missing rows', async () => {
+  const roster = [
+    { student_id: 'b6f3704f-2d5a-45b0-a6d4-0b4e5512b04c', studentCode: 'CS-001', studentName: 'Alex Chen', email: 'alex@example.test' },
+    { student_id: 'c3b4e911-2631-4d3e-83c4-00a8cb933255', studentCode: 'CS-002', studentName: 'Riya Shah', email: 'riya@example.test' },
+  ];
+  const preview = await parseAttendanceUpload({
+    originalname: 'attendance.csv',
+    mimetype: 'text/csv',
+    buffer: Buffer.from('\uFEFFStudent ID,Attendance Status\r\nCS-001,present\r\nunknown,absent\r\n', 'utf8'),
+  }, roster);
+
+  assert.equal(preview.totalRows, 2);
+  assert.equal(preview.validCount, 1);
+  assert.equal(preview.invalidCount, 2);
+  assert.equal(preview.unknownCount, 1);
+  assert.deepEqual(preview.validRecords, [{ studentId: roster[0].student_id, status: 'present' }]);
+  assert.ok(preview.rows.some((row) => row.issues.some((issue) => issue.includes('unknown'))));
+  assert.ok(preview.rows.some((row) => row.studentId === roster[1].student_id && row.issues.some((issue) => issue.includes('missing'))));
+});
+
+test('attendance CSV parser rejects malformed, empty, unsupported, invalid-status, and duplicate input', async () => {
+  const roster = [
+    { student_id: 'b6f3704f-2d5a-45b0-a6d4-0b4e5512b04c', studentCode: 'CS-001', studentName: 'Alex Chen', email: '' },
+  ];
+  const csvFile = (content) => ({
+    originalname: 'attendance.csv',
+    mimetype: 'text/csv',
+    buffer: Buffer.from(content, 'utf8'),
+  });
+  await assert.rejects(parseAttendanceUpload(csvFile(''), roster), /empty/);
+  await assert.rejects(parseAttendanceUpload(csvFile('Student ID,Status\n"CS-001,present'), roster), /unterminated/);
+  await assert.rejects(parseAttendanceUpload({
+    originalname: 'attendance.xls',
+    mimetype: 'application/vnd.ms-excel',
+    buffer: Buffer.from('legacy'),
+  }, roster), /Only CSV and XLSX/);
+  await assert.rejects(parseAttendanceUpload(csvFile('Name,Status\nAlex,present'), roster), /Student ID and Attendance Status/);
+
+  const invalid = await parseAttendanceUpload(csvFile(
+    'Student ID,Status\nCS-001,on leave\nCS-001,present\n',
+  ), roster);
+  assert.equal(invalid.duplicateCount, 2);
+  assert.equal(invalid.validCount, 0);
+  assert.ok(invalid.rows.every((row) => row.issues.length > 0));
+});
+
+test('attendance XLSX preview parses workbook rows and enforces the upload row limit', async () => {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet('Attendance');
+  sheet.addRow(['Student ID', 'Attendance Status']);
+  sheet.addRow(['CS-001', 'late']);
+  const roster = [
+    { student_id: 'b6f3704f-2d5a-45b0-a6d4-0b4e5512b04c', studentCode: 'CS-001', studentName: 'Alex Chen', email: '' },
+  ];
+  const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
+  const preview = await parseAttendanceUpload({
+    originalname: 'attendance.xlsx',
+    mimetype: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    buffer,
+  }, roster);
+  assert.deepEqual(preview.validRecords, [{ studentId: roster[0].student_id, status: 'late' }]);
+
+  const oversized = [
+    'Student ID,Status',
+    ...Array.from({ length: 501 }, (_, index) => `CS-${index},present`),
+  ].join('\n');
+  await assert.rejects(parseAttendanceUpload({
+    originalname: 'attendance.csv',
+    mimetype: 'text/csv',
+    buffer: Buffer.from(oversized),
+  }, roster), /at most 500/);
+});
+
+test('attendance saving payload validation rejects duplicate IDs and unsupported statuses', () => {
+  const studentId = 'b6f3704f-2d5a-45b0-a6d4-0b4e5512b04c';
+  assert.deepEqual(validateAttendanceRecords([{ studentId, status: 'excused' }]), [{ studentId, status: 'excused' }]);
+  assert.throws(() => validateAttendanceRecords([
+    { studentId, status: 'present' },
+    { studentId, status: 'absent' },
+  ]), /Duplicate students/);
+  assert.throws(() => validateAttendanceRecords([{ studentId, status: 'on_leave' }]), /status must be valid/);
+  assert.throws(() => validateAttendanceRecords([]), /records are required/);
+});
+
+test('attendance roster loads without an enrollment-profile relationship and tolerates legacy profile columns', async () => {
+  const studentId = 'b6f3704f-2d5a-45b0-a6d4-0b4e5512b04c';
+  const otherInstitutionStudentId = 'c3b4e911-2631-4d3e-83c4-00a8cb933255';
+  const requested = [];
+  const adminClient = {
+    from(table) {
+      const state = { table, columns: '', filters: [] };
+      const query = {
+        select(columns) {
+          state.columns = columns;
+          return this;
+        },
+        eq(column, value) {
+          state.filters.push(['eq', column, value]);
+          return this;
+        },
+        in(column, values) {
+          state.filters.push(['in', column, values]);
+          return this;
+        },
+        then(resolve, reject) {
+          requested.push(state);
+          if (table === 'enrollments') {
+            return Promise.resolve({
+              data: [
+                { student_id: studentId, status: 'ACTIVE' },
+                { student_id: studentId, status: 'enrolled' },
+                { student_id: otherInstitutionStudentId, status: 'active' },
+                { student_id: 'withdrawn-student', status: 'withdrawn' },
+              ],
+              error: null,
+            }).then(resolve, reject);
+          }
+          if (state.columns.includes('full_name')) {
+            return Promise.resolve({
+              data: null,
+              error: { code: 'PGRST204', message: 'column full_name not found' },
+            }).then(resolve, reject);
+          }
+          return Promise.resolve({
+            data: [
+              { id: studentId, email: 'alex@example.test', role: 'student', institution_id: 'institution-1' },
+              { id: otherInstitutionStudentId, email: 'other@example.test', role: 'student', institution_id: 'institution-2' },
+              { id: 'faculty-profile', email: 'faculty@example.test', role: 'faculty', institution_id: 'institution-1' },
+            ],
+            error: null,
+          }).then(resolve, reject);
+        },
+      };
+      return query;
+    },
+  };
+
+  const roster = await loadAttendanceRosterFromDatabase(adminClient, 'course-1', 'institution-1');
+
+  assert.deepEqual(roster, [{
+    student_id: studentId,
+    studentCode: studentId,
+    studentName: 'alex@example.test',
+    email: 'alex@example.test',
+  }]);
+  assert.equal(requested[0].table, 'enrollments');
+  assert.equal(requested[0].columns, 'student_id,status');
+  assert.equal(requested.some((query) => query.columns.includes('profiles!inner')), false);
+  assert.deepEqual(requested[2].filters[0], ['in', 'id', [studentId, otherInstitutionStudentId]]);
+});
+
+test('attendance upload and write endpoints reject non-faculty roles before accessing Supabase', async () => {
+  for (const [method, path, role] of [
+    ['POST', '/attendance/upload/preview', 'student'],
+    ['POST', '/attendance/sessions', 'admin'],
+    ['PUT', '/attendance/sessions/b6f3704f-2d5a-45b0-a6d4-0b4e5512b04c', 'student'],
+    ['GET', '/attendance/activity', 'instructor'],
+  ]) {
+    let responseStatus = 0;
+    let responseBody;
+    const response = {
+      status(status) { responseStatus = status; return this; },
+      json(body) { responseBody = body; return this; },
+    };
+    await handleApiRequest({
+      method,
+      path,
+      user: { id: 'b6f3704f-2d5a-45b0-a6d4-0b4e5512b04c', role },
+      query: {},
+      body: {},
+    }, response, () => {
+      throw new Error('Unauthorized attendance action unexpectedly reached the next handler.');
+    });
+    assert.equal(responseStatus, 403);
+    assert.ok(responseBody.detail);
+  }
+});
+
+test('attendance migration uses atomic validated writes and keeps corrections auditable', () => {
+  const migration = fs.readFileSync(
+    path.join(projectRoot, 'supabase', 'migrations', '202611150002_attendance_workflow.sql'),
+    'utf8',
+  );
+  assert.match(migration, /create table if not exists public\.attendance_corrections/i);
+  assert.match(migration, /enable row level security/i);
+  assert.match(migration, /private\.can_manage_course\(target_course_id\)/i);
+  assert.match(migration, /student_matches_course_institution/i);
+  assert.match(migration, /\(item ->> 'status'\) is null/i);
+  assert.match(migration, /Corrections must include every original student record/i);
+  assert.match(migration, /on delete restrict/i);
+  assert.match(migration, /Provide a reason for attendance corrections/i);
+  assert.match(migration, /grant execute on function public\.save_attendance_session[\s\S]*to authenticated/i);
+  assert.doesNotMatch(migration, /drop\s+table|drop\s+column|delete\s+from|truncate\s+/i);
+  const server = fs.readFileSync(path.join(projectRoot, 'server.js'), 'utf8');
+  assert.match(server, /req\.path === '\/attendance\/upload\/preview'/);
+});
+
+test('project access migration breaks the RLS cycle without weakening tenant checks', () => {
+  const migration = fs.readFileSync(
+    path.join(projectRoot, 'supabase', 'migrations', '202611150003_fix_project_rls_recursion.sql'),
+    'utf8',
+  );
+
+  assert.match(migration, /function private\.can_access_project\(target_project_id uuid\)[\s\S]*security definer[\s\S]*set search_path = ''/i);
+  assert.match(migration, /function private\.can_access_project_member\([\s\S]*target_student_id uuid[\s\S]*security definer[\s\S]*set search_path = ''/i);
+  assert.match(migration, /actor\.role = 'admin'/i);
+  assert.match(migration, /p\.institution_id = private\.current_institution_id\(\)[\s\S]*target_student_id = \(select auth\.uid\(\)\)/i);
+  assert.match(migration, /p\.institution_id = private\.current_institution_id\(\)/i);
+  assert.match(migration, /p\.created_by = \(select auth\.uid\(\)\)[\s\S]*student\.role = 'student'[\s\S]*student\.institution_id = private\.current_institution_id\(\)/i);
+  assert.match(migration, /create policy projects_access[\s\S]*using \(private\.can_access_project\(id\)\)/i);
+  assert.match(migration, /create policy project_members_access[\s\S]*using \(private\.can_access_project_member\(project_id, student_id\)\)[\s\S]*with check \(private\.can_add_project_member\(project_id, student_id\)\)/i);
+  assert.match(migration, /revoke all on function private\.can_access_project\(uuid\) from public, anon/i);
+  assert.doesNotMatch(migration, /drop\s+table|drop\s+column|delete\s+from|truncate\s+/i);
+});
+
+test('course Storage path parser is executable by authenticated policy callers only', () => {
+  const migration = fs.readFileSync(
+    path.join(projectRoot, 'supabase', 'migrations', '202611150004_course_storage_path_execute_grant.sql'),
+    'utf8',
+  );
+
+  assert.match(migration, /grant execute on function private\.course_id_from_storage_path\(text\) to authenticated/i);
+  assert.doesNotMatch(migration, /to\s+(?:public|anon)\b/i);
+  assert.doesNotMatch(migration, /grant execute on function private\.can_manage_course/i);
+});
+
+test('practice assignment lifecycle protects backend grading and owner-scoped records', () => {
+  const migration = fs.readFileSync(
+    path.join(projectRoot, 'supabase', 'migrations', '202611150001_practice_assignment_lifecycle.sql'),
+    'utf8',
+  );
+
+  assert.match(migration, /as restrictive\s+for insert to authenticated/i);
+  assert.match(migration, /as restrictive\s+for update to authenticated/i);
+  assert.match(migration, /as restrictive\s+for delete to authenticated/i);
+  assert.match(migration, /create_practice_assessment/i);
+  assert.match(migration, /auth\.role\(\) is distinct from 'service_role'/i);
+  assert.match(migration, /p\.id = target_owner_id\s+and p\.role = 'student'\s+and p\.is_approved is true/i);
+  assert.match(migration, /e\.student_id = target_owner_id\s+and e\.course_id = target_course_id/i);
+  assert.match(migration, /'submittedAnswers', 'submittedAt', 'timeSpentSeconds'/i);
+  assert.match(migration, /'result', 'submissionId', 'gradedAt'/i);
+  assert.match(migration, /'draftAnswers', 'unansweredQuestionIds'/i);
+  assert.match(migration, /assessment_row\.payload - 'draftAnswers' - 'unansweredQuestionIds'/i);
+  assert.match(migration, /grant execute on function public\.transition_practice_assessment_state[\s\S]*to service_role/i);
+  assert.doesNotMatch(migration, /grant execute on function public\.(?:create_practice_assessment|transition_practice_assessment_state)[\s\S]*to authenticated/i);
+  assert.doesNotMatch(migration, /drop\s+table|drop\s+column|delete\s+from|truncate\s+/i);
 });
 
 test('duplicate filenames receive distinct course-scoped Storage object paths', () => {
@@ -214,8 +466,9 @@ test('attendance writes enforce the course institution for enrolled students', (
   assert.match(migration, /private\.student_matches_course_institution/i);
   assert.match(migration, /student\.institution_id = course\.institution_id/i);
   const source = fs.readFileSync(path.join(projectRoot, 'server', 'api.js'), 'utf8');
-  assert.match(source, /profiles!inner\(role,institution_id\)/i);
-  assert.match(source, /row\.profiles\.institution_id === course\.institution_id/i);
+  assert.match(source, /from\('enrollments'\)[\s\S]*?select\('student_id,status'\)/i);
+  assert.match(source, /from\('profiles'\)[\s\S]*?\.in\('id', studentIds\)/i);
+  assert.match(source, /profile\.institution_id === courseInstitutionId/i);
 });
 
 test('projects and research migration is additive and institution isolated', () => {
@@ -239,7 +492,8 @@ test('projects and research migration is additive and institution isolated', () 
 
 test('attendance and project routes validate ownership-sensitive operations', () => {
   const source = fs.readFileSync(path.join(projectRoot, 'server', 'api.js'), 'utf8');
-  assert.match(source, /Attendance can only be recorded for enrolled students/);
+  assert.match(source, /save_attendance_session/);
+  assert.match(source, /validateAttendanceRecords\(records\)/);
   assert.match(source, /Only the assigned faculty member can edit this session/);
   assert.match(source, /if \(user\.role !== 'instructor'\) throw fail\(403, 'Only faculty can create attendance sessions\.'/);
   assert.match(source, /if \(user\.role !== 'instructor'\) throw fail\(403, 'Only faculty can save attendance\.'/);

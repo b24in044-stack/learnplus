@@ -201,7 +201,7 @@ export interface Assessment {
 export interface AssessmentSubmission {
   assessmentId: string;
   studentId: string;
-  answers: Record<string, number>; // questionId -> optionIndex
+  answers: Record<string, number | string>; // questionId -> optionIndex or response text
   timeSpentSeconds: number;
   aiGenerated?: boolean;
 }
@@ -210,17 +210,24 @@ export interface QuestionResult {
   questionId: string;
   questionText: string;
   selectedOption: number;
+  selectedAnswer?: string | number;
+  correctAnswer?: string;
   correctOption?: number;
   isCorrect?: boolean;
   explanation?: string;
+  topic?: string;
+  score?: number;
 }
 
 export interface AssessmentResult {
   submissionId: string;
   assessmentId: string;
+  courseId?: string;
   assessmentTitle: string;
   courseCode: string;
   score: number;
+  marksObtained?: number;
+  maximumScore?: number;
   totalQuestions: number;
   percentage: number;
   passed: boolean;
@@ -240,6 +247,8 @@ export interface AssessmentResult {
   };
   aiGenerated?: boolean;
   official?: boolean;
+  status?: string;
+  learningAnalysisStatus?: string;
 }
 
 export interface SourceCitation {
@@ -286,6 +295,8 @@ export interface GeneratedPracticeAssessmentResponse {
   courseId: string;
   title: string;
   topic: string;
+  topics?: string[];
+  subject?: string;
   difficulty: Assessment['difficulty'];
   format: 'mcq' | 'descriptive';
   aiGenerated: true;
@@ -297,6 +308,88 @@ export interface GeneratedPracticeAssessment extends GeneratedPracticeAssessment
   courseCode?: string;
   durationMinutes: number;
   passingScore: number;
+}
+
+export interface LearningAssignmentCard {
+  id: string;
+  assignmentNumber: number;
+  name: string;
+  displayName: string;
+  subject: string;
+  courseId: string;
+  courseCode: string;
+  topics: string[];
+  completionDate: string;
+  score: number;
+  maximumScore: number;
+  percentage: number;
+  completionStatus: 'RESULTS_PUBLISHED';
+  learningAnalysisStatus: string;
+  difficulty: Assessment['difficulty'];
+  totalQuestions: number;
+}
+
+export interface LearningTopicPerformance {
+  topic: string;
+  courseId: string | null;
+  courseCode: string;
+  attempts: number;
+  correct: number;
+  accuracy: number;
+  estimatedMastery: number | null;
+  evidenceStatus: 'MEASURED' | 'INSUFFICIENT_EVIDENCE';
+  assignmentCount: number;
+  repeatedIncorrectAnswers: number;
+  improvementAcrossAssignments: number | null;
+}
+
+export interface LearningAssignmentOverview {
+  totalAssignmentsCompleted: number;
+  totalQuestionsAttempted: number;
+  correctAnswers: number;
+  overallAccuracy: number | null;
+  overallTopicMastery: LearningTopicPerformance[];
+  topicsRequiringImprovement: LearningTopicPerformance[];
+  strengths: LearningTopicPerformance[];
+  repeatedIncorrectTopics: LearningTopicPerformance[];
+  difficultyPerformance: {
+    difficulty: Assessment['difficulty'];
+    attempted: number;
+    correct: number;
+    accuracy: number;
+  }[];
+  personalizedLearningPlan: {
+    topic: string;
+    courseId: string | null;
+    courseCode: string;
+    priority: 'high' | 'medium';
+    action: string;
+    reason: string;
+    evidenceStatus: 'MEASURED' | 'INSUFFICIENT_EVIDENCE';
+  }[];
+  evidenceNote: string;
+}
+
+export interface LearningAssignmentHistory {
+  overview: LearningAssignmentOverview;
+  completedAssignments: LearningAssignmentCard[];
+}
+
+export interface LearningAssignmentDetail {
+  assignment: LearningAssignmentCard;
+  details: {
+    totalQuestions: number;
+    correctAnswers: number;
+    incorrectAnswers: number;
+    marksObtained: number;
+    maximumScore: number;
+    percentage: number;
+    topicPerformance: AssessmentResult['topicBreakdown'];
+    questionResults: QuestionResult[];
+    difficultyPerformance: LearningAssignmentOverview['difficultyPerformance'];
+    strengths: LearningTopicPerformance[];
+    weaknesses: LearningTopicPerformance[];
+  };
 }
 
 export interface ChatMessage {

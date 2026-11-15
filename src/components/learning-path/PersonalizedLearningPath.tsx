@@ -10,7 +10,7 @@ import {
   FileText,
   Play
 } from 'lucide-react';
-import { AgentWorkflowResult, LearningPathNode, Course } from '../../types';
+import { AgentWorkflowResult, LearningAssignmentHistory, LearningPathNode, Course } from '../../types';
 import { api } from '../../services/api';
 import { NavTab } from '../layout/Sidebar';
 import { Card } from '../ui/Card';
@@ -47,6 +47,10 @@ export const PersonalizedLearningPath: React.FC<PersonalizedLearningPathProps> =
   const [nodes, setNodes] = useState<LearningPathNode[]>([]);
   const [personalizedRecommendations, setPersonalizedRecommendations] = useState<PersonalizedRecommendation[]>([]);
   const [personalizationError, setPersonalizationError] = useState<string | null>(null);
+  const [assignmentLearningPlan, setAssignmentLearningPlan] = useState<
+    LearningAssignmentHistory['overview']['personalizedLearningPlan']
+  >([]);
+  const [assignmentLearningError, setAssignmentLearningError] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<LearningPathNode | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -66,11 +70,28 @@ export const PersonalizedLearningPath: React.FC<PersonalizedLearningPathProps> =
       setIsLoading(true);
       setError(null);
       setPersonalizationError(null);
+      setAssignmentLearningError(null);
+      setAssignmentLearningPlan([]);
       setPersonalizedRecommendations([]);
       try {
         const pathData = await api.getLearningPath(selectedCourseId);
         if (!active) return;
         setNodes(pathData);
+        if (selectedCourseId) {
+          try {
+            const history = await api.getLearningAssignmentHistory();
+            if (!active) return;
+            setAssignmentLearningPlan(history.overview.personalizedLearningPlan.filter(
+              (item) => item.courseId === selectedCourseId
+            ));
+          } catch (historyError) {
+            if (active) {
+              setAssignmentLearningError(
+                historyError instanceof Error ? historyError.message : 'Completed-assignment recommendations could not be loaded.'
+              );
+            }
+          }
+        }
         if (pathData.length > 0) {
           const inProg = pathData.find(n => n.status === 'in_progress') || pathData[0];
           setSelectedNode(inProg);
@@ -116,6 +137,34 @@ export const PersonalizedLearningPath: React.FC<PersonalizedLearningPathProps> =
       active = false;
     };
   }, [selectedCourseId, loadAttempt]);
+
+  const assignmentLearningSection = assignmentLearningPlan.length > 0 ? (
+    <Card className="p-5">
+      <h2 className="text-sm font-bold text-[#0F172A]">Recommendations from completed assignments</h2>
+      <p className="mt-1 text-[11px] text-[#64748B]">
+        Based on published AI-practice results for {activeCourse?.code || 'this course'}; these are learning estimates, not official marks.
+      </p>
+      <ul className="mt-3 space-y-3">
+        {assignmentLearningPlan.map((item) => (
+          <li key={`${item.courseId || selectedCourseId}-${item.topic}`} className="rounded-lg bg-amber-50 p-3">
+            <p className="text-xs font-bold text-[#0F172A]">{item.topic}</p>
+            <p className="mt-1 text-xs text-[#475569]">{item.reason} {item.action}</p>
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-2"
+              onClick={() => onNavigate('tutor', {
+                courseId: item.courseId || selectedCourseId,
+                topicQuery: `Help me review ${item.topic} in ${activeCourse?.code || 'this course'}. ${item.reason} This is AI practice evidence, not an official grade.`,
+              })}
+            >
+              Review with AI Tutor
+            </Button>
+          </li>
+        ))}
+      </ul>
+    </Card>
+  ) : null;
 
   return (
     <div className="p-6 md:p-8 max-w-7xl mx-auto space-y-6">
@@ -168,6 +217,12 @@ export const PersonalizedLearningPath: React.FC<PersonalizedLearningPathProps> =
             actionLabel="View Course Topics"
             onAction={() => onNavigate('courses', { courseId: selectedCourseId })}
           />
+          {assignmentLearningSection}
+          {assignmentLearningError && (
+            <p role="status" className="mt-3 text-[11px] text-[#64748B]">
+              Completed-assignment recommendations are unavailable: {assignmentLearningError}
+            </p>
+          )}
           {personalizedRecommendations.length > 0 && (
             <div className="mt-5 border-t border-[#E2E8F0] pt-4">
               <p className="text-xs font-semibold text-[#0F172A]">
@@ -191,6 +246,14 @@ export const PersonalizedLearningPath: React.FC<PersonalizedLearningPathProps> =
       ) : (
         /* Main Layout: Interactive Graph Flow + Selected Node Detail Deck */
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {assignmentLearningSection && (
+            <div className="lg:col-span-3">{assignmentLearningSection}</div>
+          )}
+          {assignmentLearningError && (
+            <p role="status" className="lg:col-span-3 text-[11px] text-[#64748B]">
+              Completed-assignment recommendations are unavailable: {assignmentLearningError}
+            </p>
+          )}
           {/* Concept Flow Steps (2 Cols) */}
           <div className="lg:col-span-2 space-y-4">
             <Card className="p-6 space-y-6">

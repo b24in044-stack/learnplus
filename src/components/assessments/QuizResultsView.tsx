@@ -16,7 +16,7 @@ import { NavTab } from '../layout/Sidebar';
 interface QuizResultsViewProps {
   result: AssessmentResult;
   onRetake: () => void;
-  onNavigate: (tab: NavTab, params?: { topicQuery?: string }) => void;
+  onNavigate: (tab: NavTab, params?: { topicQuery?: string; courseId?: string }) => void;
 }
 
 export const QuizResultsView: React.FC<QuizResultsViewProps> = ({
@@ -89,6 +89,7 @@ export const QuizResultsView: React.FC<QuizResultsViewProps> = ({
           <button
             onClick={() =>
               onNavigate('tutor', {
+                courseId: result.courseId,
                 topicQuery: result.recommendedFollowUp.practicePrompt
               })
             }
@@ -164,6 +165,12 @@ export const QuizResultsView: React.FC<QuizResultsViewProps> = ({
                     {q.isCorrect === undefined ? 'Grading details withheld' : q.isCorrect ? 'Correct Answer Selected' : 'Incorrect Choice'}
                   </span>
                 </div>
+                {q.selectedAnswer !== undefined && (
+                  <p><strong>Selected answer:</strong> {String(q.selectedAnswer)}</p>
+                )}
+                {q.correctAnswer && (
+                  <p><strong>Correct answer:</strong> {q.correctAnswer}</p>
+                )}
                 <p className="text-[11px] text-[#64748B] leading-relaxed">
                   <strong className="text-[#334155]">Academic Explanation:</strong> {q.explanation || 'Answer details are not shown for this assessment.'}
                 </p>
@@ -174,7 +181,12 @@ export const QuizResultsView: React.FC<QuizResultsViewProps> = ({
       </div>
 
       {/* Actions */}
-      <div className="flex items-center justify-between p-4 bg-white border border-[#E2E8F0] rounded-xl">
+      {result.learningAnalysisStatus && (
+        <p className="text-xs text-[#64748B]" role="status">
+          Learning analysis: {result.learningAnalysisStatus.replaceAll('_', ' ').toLowerCase()}.
+        </p>
+      )}
+      <div className="flex flex-wrap items-center justify-between gap-3 p-4 bg-white border border-[#E2E8F0] rounded-xl">
         <button
           onClick={onRetake}
           className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-[#334155] bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
@@ -184,10 +196,10 @@ export const QuizResultsView: React.FC<QuizResultsViewProps> = ({
         </button>
 
         <button
-          onClick={() => onNavigate('dashboard')}
+          onClick={() => onNavigate(result.aiGenerated ? 'learning-agent' : 'dashboard')}
           className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#4338CA] hover:bg-[#3730A3] rounded-lg transition-colors shadow-xs"
         >
-          Return to Overview
+          {result.aiGenerated ? 'Open Learning Agent' : 'Return to Overview'}
           <ArrowRight className="w-3.5 h-3.5" />
         </button>
       </div>

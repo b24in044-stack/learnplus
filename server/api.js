@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import ExcelJS from 'exceljs';
 import {
   getStudentAcademicContext,
   getStudentDocumentDownload,
@@ -73,6 +74,347 @@ const optionalText = (value, label, max) => {
   }
   return value.trim();
 };
+async function fetchAttendanceRows(queryFactory, pageSize = 500) {
+  const rows = [];
+  for (let offset = 0; ; offset += pageSize) {
+    const { data, error } = await queryFactory().range(offset, offset + pageSize - 1);
+    if (error) throw error;
+    rows.push(...(data || []));
+    if ((data || []).length < pageSize) return rows;
+  }
+}
+const attendanceStatuses = new Set(['present', 'absent', 'late', 'excused']);
+const attendanceUploadMaxRows = 500;
+
+function parseAttendanceCsv(buffer) {
+  let text;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(buffer).replace(/^\uFEFF/, '');
+  } catch {
+    throw fail(400, 'The CSV file must contain valid UTF-8 text.');
+  }
+  if (!text.trim()) throw fail(400, 'The attendance file is empty.');
+
+  const rows = [];
+  let row = [];
+  let field = '';
+  let quoted = false;
+  let closedQuote = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (quoted) {
+      if (character === '"' && text[index + 1] === '"') {
+        field += '"';
+        index += 1;
+      } else if (character === '"') {
+        quoted = false;
+        closedQuote = true;
+      } else {
+        field += character;
+      }
+      continue;
+    }
+    if (character === '"' && field === '' && !closedQuote) {
+      quoted = true;
+    } else if (character === ',' || character === '\t') {
+      row.push(field);
+      field = '';
+      closedQuote = false;
+    } else if (character === '\n' || character === '\r') {
+      if (character === '\r' && text[index + 1] === '\n') index += 1;
+      row.push(field);
+      if (row.some((value) => value.trim())) rows.push(row);
+      row = [];
+      field = '';
+      closedQuote = false;
+    } else if (closedQuote && !/\s/.test(character)) {
+      throw fail(400, 'The CSV contains unexpected characters after a quoted value.');
+    } else {
+      field += character;
+    }
+  }
+  if (quoted) throw fail(400, 'The CSV contains an unterminated quoted value.');
+  if (field || row.length) {
+    row.push(field);
+    if (row.some((value) => value.trim())) rows.push(row);
+  }
+  return rows;
+}
+
+function attendanceHeaderIndex(header, aliases) {
+  return header.findIndex((value) => aliases.includes(String(value).trim().toLowerCase().replace(/[\s_-]+/g, ' ')));
+}
+
+export async function parseAttendanceUpload(file, roster) {
+  if (!file || !Buffer.isBuffer(file.buffer) || !file.buffer.length) {
+    throw fail(400, 'Choose a non-empty CSV or XLSX attendance file.');
+  }
+  const extension = file.originalname?.split('.').pop()?.toLowerCase();
+  let rows;
+  if (extension === 'csv' && ['text/csv', 'application/csv', 'application/vnd.ms-excel', 'text/plain'].includes(file.mimetype)) {
+    rows = parseAttendanceCsv(file.buffer);
+  } else if (extension === 'xlsx'
+    && ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/octet-stream'].includes(file.mimetype)
+    && file.buffer.subarray(0, 2).toString('ascii') === 'PK') {
+    try {
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(file.buffer);
+      const worksheet = workbook.worksheets[0];
+      if (!worksheet) throw fail(400, 'The XLSX workbook does not contain a worksheet.');
+      rows = [];
+      worksheet.eachRow({ includeEmpty: false }, (excelRow) => {
+        rows.push(excelRow.values.slice(1).map((value) => (
+          value && typeof value === 'object'
+            ? (typeof value.text === 'string' ? value.text : value.result ?? '')
+            : value == null ? '' : String(value)
+        )));
+      });
+    } catch (error) {
+      if (Number.isInteger(error?.status)) throw error;
+      throw fail(400, 'The XLSX file could not be read. Use a valid .xlsx workbook.');
+    }
+  } else {
+    throw fail(415, 'Only CSV and XLSX attendance files are supported; legacy XLS is not supported.');
+  }
+  if (!rows.length) throw fail(400, 'The attendance file is empty.');
+  if (rows.length - 1 > attendanceUploadMaxRows) {
+    throw fail(413, `Attendance files may contain at most ${attendanceUploadMaxRows} student rows.`);
+  }
+
+  const header = rows[0].map((value) => String(value ?? '').trim().toLowerCase().replace(/[\s_-]+/g, ' '));
+  const studentIndex = attendanceHeaderIndex(header, ['student id', 'studentid', 'email']);
+  const statusIndex = attendanceHeaderIndex(header, ['attendance status', 'status']);
+  if (studentIndex < 0 || statusIndex < 0 || studentIndex === statusIndex) {
+    throw fail(400, 'The file must include Student ID and Attendance Status columns.');
+  }
+  const uploadRows = rows.slice(1).map((values, index) => ({
+    rowNumber: index + 2,
+    studentIdentifier: String(values[studentIndex] ?? '').trim(),
+    requestedStatus: String(values[statusIndex] ?? '').trim(),
+  }));
+  return previewAttendanceRows(uploadRows, roster);
+}
+
+function previewAttendanceRows(uploadRows, roster) {
+  const byIdentifier = new Map();
+  for (const student of roster) {
+    const identifiersForStudent = new Set();
+    for (const identifier of [student.student_id, student.studentCode, student.email]) {
+      if (typeof identifier !== 'string' || !identifier.trim()) continue;
+      const key = identifier.trim().toLowerCase();
+      if (identifiersForStudent.has(key)) continue;
+      identifiersForStudent.add(key);
+      const matches = byIdentifier.get(key) || [];
+      matches.push(student);
+      byIdentifier.set(key, matches);
+    }
+
+  }
+
+  const rows = uploadRows.map((uploadRow) => {
+    const matches = byIdentifier.get(uploadRow.studentIdentifier.toLowerCase()) || [];
+    const student = matches.length === 1 ? matches[0] : null;
+    const status = uploadRow.requestedStatus.toLowerCase();
+    const issues = [];
+    if (!uploadRow.studentIdentifier) issues.push('Student ID is required.');
+    else if (!matches.length) issues.push('Student ID is unknown or not enrolled in this course.');
+    else if (matches.length > 1) issues.push('Student ID matches more than one enrolled student.');
+    if (!attendanceStatuses.has(status)) issues.push('Status must be Present, Absent, Late, or Excused.');
+    return {
+      rowNumber: uploadRow.rowNumber,
+      studentId: student?.student_id || null,
+      studentCode: student?.studentCode || null,
+      studentName: student?.studentName || student?.email || 'Unknown student',
+      email: student?.email || '',
+      status,
+      issues,
+    };
+  });
+
+  const rowsByStudent = new Map();
+  for (const row of rows) {
+    if (!row.studentId) continue;
+    const duplicates = rowsByStudent.get(row.studentId) || [];
+    duplicates.push(row);
+    rowsByStudent.set(row.studentId, duplicates);
+  }
+  for (const duplicates of rowsByStudent.values()) {
+    if (duplicates.length > 1) {
+      duplicates.forEach((row) => row.issues.push('Duplicate student ID appears more than once.'));
+    }
+  }
+
+  const includedStudents = new Set(rows.filter((row) => row.studentId).map((row) => row.studentId));
+  for (const student of roster) {
+    if (!includedStudents.has(student.student_id)) {
+      rows.push({
+        rowNumber: null,
+        studentId: student.student_id,
+        studentCode: student.studentCode || null,
+        studentName: student.studentName || student.email || 'Student',
+        email: student.email || '',
+        status: '',
+        issues: ['Student is missing from the attendance file.'],
+      });
+    }
+  }
+
+  return {
+    totalRows: uploadRows.length,
+    validCount: rows.filter((row) => row.issues.length === 0).length,
+    invalidCount: rows.filter((row) => row.issues.length > 0).length,
+    duplicateCount: rows.filter((row) => row.issues.some((issue) => issue.startsWith('Duplicate'))).length,
+    unknownCount: rows.filter((row) => row.issues.some((issue) => issue.startsWith('Student ID is unknown'))).length,
+    rows,
+    validRecords: rows.filter((row) => row.issues.length === 0).map((row) => ({
+      studentId: row.studentId,
+      status: row.status,
+    })),
+  };
+}
+
+export function validateAttendanceRecords(records) {
+  if (!Array.isArray(records) || records.length === 0 || records.length > 500) {
+    throw fail(400, 'Attendance records are required and may not exceed 500 students.');
+  }
+  const seen = new Set();
+  return records.map((record) => {
+    const studentId = requireUuid(record?.studentId, 'Student ID');
+    if (seen.has(studentId)) throw fail(400, 'Duplicate students are not allowed.');
+    seen.add(studentId);
+    if (!attendanceStatuses.has(record?.status)) throw fail(400, 'Each attendance status must be valid.');
+    return { studentId, status: record.status };
+  });
+}
+
+function attendanceCsvCell(value) {
+  const text = String(value ?? '');
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function isMissingAttendanceProfileColumn(error) {
+  return error?.code === '42703'
+    || error?.code === 'PGRST204'
+    || (typeof error?.message === 'string' && /column .* does not exist/i.test(error.message));
+}
+
+export async function loadAttendanceRosterFromDatabase(adminClient, courseId, courseInstitutionId) {
+  const { data: enrollments, error: enrollmentError } = await adminClient.from('enrollments')
+    .select('student_id,status')
+    .eq('course_id', courseId);
+  if (enrollmentError) throw enrollmentError;
+
+  const studentIds = [...new Set((enrollments || [])
+    .filter((enrollment) => ['active', 'enrolled'].includes(String(enrollment.status || '').toLowerCase()))
+    .map((enrollment) => enrollment.student_id)
+    .filter((studentId) => typeof studentId === 'string' && studentId))];
+  if (!studentIds.length) return [];
+
+  let response = await adminClient.from('profiles')
+    .select('id,email,role,institution_id,full_name,student_id')
+    .in('id', studentIds);
+  if (response.error && isMissingAttendanceProfileColumn(response.error)) {
+    response = await adminClient.from('profiles')
+      .select('id,email,role,institution_id')
+      .in('id', studentIds);
+  }
+  if (response.error) throw response.error;
+
+  const profilesById = new Map((response.data || [])
+    .filter((profile) => profile.role === 'student'
+      && (!courseInstitutionId || profile.institution_id === courseInstitutionId))
+    .map((profile) => [profile.id, profile]));
+  return studentIds.flatMap((studentId) => {
+    const profile = profilesById.get(studentId);
+    if (!profile) return [];
+    return [{
+      student_id: studentId,
+      studentCode: typeof profile.student_id === 'string' && profile.student_id.trim()
+        ? profile.student_id.trim()
+        : studentId,
+      studentName: typeof profile.full_name === 'string' && profile.full_name.trim()
+        ? profile.full_name.trim()
+        : (typeof profile.email === 'string' ? profile.email : 'Student'),
+      email: typeof profile.email === 'string' ? profile.email : '',
+    }];
+  });
+}
+
+async function loadAttendanceRoster(user, courseId) {
+  await requireAcademicCourseAccess(user, courseId);
+  const adminClient = getAdminSupabaseClient();
+  const { data: course, error: courseError } = await adminClient.from('courses')
+    .select('institution_id').eq('id', courseId).maybeSingle();
+  if (courseError) throw courseError;
+  if (!course) throw fail(404, 'Course not found or unavailable to this account.');
+  return loadAttendanceRosterFromDatabase(adminClient, courseId, course.institution_id);
+}
+
+async function loadAttendanceSessionRecords(sessionId) {
+  const adminClient = getAdminSupabaseClient();
+  let response = await adminClient.from('attendance_records')
+    .select('id,student_id,status,marked_by,marked_at,profiles!inner(id,email,full_name,student_id)')
+    .eq('session_id', sessionId)
+    .order('student_id');
+  if (response.error && isMissingAttendanceProfileColumn(response.error)) {
+    response = await adminClient.from('attendance_records')
+      .select('id,student_id,status,marked_by,marked_at,profiles!inner(id,email)')
+      .eq('session_id', sessionId)
+      .order('student_id');
+  }
+  if (response.error) throw response.error;
+  return (response.data || []).map((row) => {
+    const profile = Array.isArray(row.profiles) ? row.profiles[0] : row.profiles;
+    return {
+      id: row.id,
+      student_id: row.student_id,
+      status: row.status,
+      marked_by: row.marked_by,
+      marked_at: row.marked_at,
+      studentCode: typeof profile?.student_id === 'string' ? profile.student_id.trim() : '',
+      studentName: typeof profile?.full_name === 'string' ? profile.full_name.trim() : '',
+      email: typeof profile?.email === 'string' ? profile.email : '',
+    };
+  });
+}
+
+function validAttendanceDate(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+async function attendanceTemplate(roster, format) {
+  if (format === 'csv') {
+    const lines = [
+      ['Student ID', 'Attendance Status'].map(attendanceCsvCell).join(','),
+      ...roster.map((student) => [
+        student.studentCode || student.student_id,
+        '',
+      ].map(attendanceCsvCell).join(',')),
+    ];
+    return Buffer.from(`${lines.join('\r\n')}\r\n`, 'utf8');
+  }
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet('Attendance');
+  worksheet.columns = [
+    { header: 'Student ID', key: 'studentId', width: 24 },
+    { header: 'Attendance Status', key: 'status', width: 24 },
+  ];
+  roster.forEach((student) => worksheet.addRow({
+    studentId: student.studentCode || student.student_id,
+    status: '',
+  }));
+  worksheet.getColumn(1).numFmt = '@';
+  for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber += 1) {
+    worksheet.getCell(rowNumber, 2).dataValidation = {
+      type: 'list',
+      allowBlank: false,
+      formulae: ['"present,absent,late,excused"'],
+    };
+  }
+  return Buffer.from(await workbook.xlsx.writeBuffer());
+}
 
 export function validateCourseMaterialCategory(category) {
   if (typeof category !== 'string' || !courseMaterialCategories.has(category)) {
@@ -145,8 +487,20 @@ async function uploadCourseMaterial(user, courseId, file, body = {}) {
     contentType: type.mimeType,
     upsert: false,
   });
-  if (uploadError) throw uploadError;
+  if (uploadError) {
+    const httpStatus = Number(uploadError.status ?? uploadError.statusCode);
+    console.error(JSON.stringify({
+      event: 'course_material_upload_failed',
+      stage: 'storage_upload',
+      error_code: /^[A-Za-z0-9._/-]{1,80}$/.test(String(uploadError.code || ''))
+        ? String(uploadError.code)
+        : 'unknown',
+      http_status: Number.isInteger(httpStatus) ? httpStatus : null,
+    }));
+    throw uploadError;
+  }
 
+  let stage = 'document_metadata_insert';
   try {
     const metadata = {
       category,
@@ -168,6 +522,7 @@ async function uploadCourseMaterial(user, courseId, file, body = {}) {
       metadata: { category },
     });
     if (documentError) throw documentError;
+    stage = 'material_metadata_insert';
     const { data, error } = await client.from('course_materials').insert({
       course_id: courseId,
       subject_id: course.subjectId || null,
@@ -201,6 +556,16 @@ async function uploadCourseMaterial(user, courseId, file, body = {}) {
       documentStatus: 'uploaded',
     }, course.code || '');
   } catch (error) {
+    console.error(JSON.stringify({
+      event: 'course_material_upload_failed',
+      stage,
+      error_code: /^[A-Za-z0-9._/-]{1,80}$/.test(String(error?.code || ''))
+        ? String(error.code)
+        : 'unknown',
+      http_status: Number.isInteger(error?.statusCode ?? error?.status)
+        ? error.statusCode ?? error.status
+        : null,
+    }));
     const { error: documentCleanupError } = await getAdminSupabaseClient()
       .from('documents').delete().eq('id', documentId);
     if (documentCleanupError) {
@@ -775,20 +1140,17 @@ export async function handleApiRequest(req, res, next) {
     if (method === 'GET' && path === '/attendance') {
       const client = supabaseApiClient();
       if (user.role === 'student') {
-        const { data, error } = await client.from('attendance_records')
+        const records = await fetchAttendanceRows(() => client.from('attendance_records')
           .select('id,status,marked_at,attendance_sessions!inner(id,course_id,session_date,title)')
-          .eq('student_id', user.id).order('marked_at', { ascending: false }).limit(500);
-        if (error) throw error;
-        return res.json(data || []);
+          .eq('student_id', user.id).order('marked_at', { ascending: false }).order('id'));
+        return res.json(records);
       }
       if (user.role !== 'instructor') throw fail(403, 'Administrators can view attendance through class reports only.');
-      const courseQuery = client.from('attendance_sessions')
+      const sessions = await fetchAttendanceRows(() => client.from('attendance_sessions')
         .select('id,course_id,faculty_id,session_date,title,created_at')
         .eq('faculty_id', user.id)
-        .order('session_date', { ascending: false });
-      const { data, error } = await courseQuery.limit(200);
-      if (error) throw error;
-      return res.json(data || []);
+        .order('session_date', { ascending: false }).order('id'));
+      return res.json(sessions);
     }
     if (method === 'GET' && path === '/attendance/branches') {
       if (user.role !== 'admin') throw fail(403, 'Only institution administrators can view attendance branches.');
@@ -814,36 +1176,60 @@ export async function handleApiRequest(req, res, next) {
       if (user.role !== 'admin') throw fail(403, 'Only institution administrators can view attendance reports.');
       if (!user.institutionId) throw fail(403, 'Assign this administrator to an institution first.');
       const branchId = req.query.branchId ? requireUuid(req.query.branchId, 'Branch ID') : null;
-      const { data: coursesForInstitution, error: coursesError } = await supabaseApiClient()
-        .from('courses').select('id,branch_id').eq('institution_id', user.institutionId);
-      if (coursesError) throw coursesError;
-      const courseIds = (coursesForInstitution || [])
+      const semesterId = req.query.semesterId ? requireUuid(req.query.semesterId, 'Semester ID') : null;
+      const courseIdFilter = req.query.courseId ? requireUuid(req.query.courseId, 'Course ID') : null;
+      if ((req.query.from && !validAttendanceDate(String(req.query.from)))
+        || (req.query.to && !validAttendanceDate(String(req.query.to)))) {
+        throw fail(400, 'Attendance report dates must be valid calendar dates.');
+      }
+      if (req.query.from && req.query.to && String(req.query.from) > String(req.query.to)) {
+        throw fail(400, 'The report start date must not be after its end date.');
+      }
+      const coursesForInstitution = await fetchAttendanceRows(() => supabaseApiClient()
+        .from('courses').select('id,branch_id,semester_id').eq('institution_id', user.institutionId).order('id'));
+      const courseIds = coursesForInstitution
         .filter((course) => !branchId || course.branch_id === branchId)
-        .filter((course) => !req.query.courseId || course.id === req.query.courseId)
+        .filter((course) => !semesterId || course.semester_id === semesterId)
+        .filter((course) => !courseIdFilter || course.id === courseIdFilter)
         .map((course) => course.id);
       if (!courseIds.length) return res.json([]);
-      const sessionQuery = supabaseApiClient().from('attendance_sessions')
-        .select('id,course_id,session_date').in('course_id', courseIds);
-      if (req.query.from) sessionQuery.gte('session_date', String(req.query.from));
-      if (req.query.to) sessionQuery.lte('session_date', String(req.query.to));
-      const { data: sessions, error: sessionsError } = await sessionQuery.limit(2000);
-      if (sessionsError) throw sessionsError;
-      const sessionIds = (sessions || []).map((session) => session.id);
+      const sessions = [];
+      for (let index = 0; index < courseIds.length; index += 100) {
+        const courseChunk = courseIds.slice(index, index + 100);
+        const currentSessions = await fetchAttendanceRows(() => {
+          let query = supabaseApiClient().from('attendance_sessions')
+            .select('id,course_id,session_date').in('course_id', courseChunk).order('id');
+          if (req.query.from) query = query.gte('session_date', String(req.query.from));
+          if (req.query.to) query = query.lte('session_date', String(req.query.to));
+          return query;
+        });
+        sessions.push(...currentSessions);
+      }
+      const sessionIds = sessions.map((session) => session.id);
       if (!sessionIds.length) return res.json([]);
-      const { data: records, error: recordsError } = await supabaseApiClient()
-        .from('attendance_records').select('student_id,status,session_id').in('session_id', sessionIds);
-      if (recordsError) throw recordsError;
-      const courseBranchMap = new Map((coursesForInstitution || []).map((course) => [course.id, course.branch_id]));
-      const sessionMap = new Map((sessions || []).map((session) => [session.id, session.course_id]));
+      const records = [];
+      for (let index = 0; index < sessionIds.length; index += 100) {
+        const sessionChunk = sessionIds.slice(index, index + 100);
+        records.push(...await fetchAttendanceRows(() => supabaseApiClient()
+          .from('attendance_records').select('student_id,status,session_id').in('session_id', sessionChunk).order('id')));
+      }
+      const courseBranchMap = new Map((coursesForInstitution || []).map((course) => [course.id, {
+        branchId: course.branch_id,
+        semesterId: course.semester_id || null,
+      }]));
+      const sessionMap = new Map(sessions.map((session) => [session.id, session]));
       const report = new Map();
-      for (const record of records || []) {
-        const courseId = sessionMap.get(record.session_id);
-        const currentBranchId = courseBranchMap.get(courseId);
-        if (!courseId || !currentBranchId) continue;
-        const key = `${courseId}:${record.student_id}`;
+      for (const record of records) {
+        const session = sessionMap.get(record.session_id);
+        const courseId = session?.course_id;
+        const courseContext = courseBranchMap.get(courseId);
+        if (!courseId || !courseContext?.branchId) continue;
+        const key = `${courseId}:${record.student_id}:${session.session_date}`;
         const item = report.get(key) || {
           courseId,
-          branchId: currentBranchId,
+          branchId: courseContext.branchId,
+          semesterId: courseContext.semesterId,
+          date: session.session_date,
           studentId: record.student_id,
           total: 0,
           present: 0,
@@ -860,23 +1246,90 @@ export async function handleApiRequest(req, res, next) {
         percentage: item.total ? Math.round(((item.present + item.late + item.excused) / item.total) * 100) : 0,
       })));
     }
+    if (method === 'GET' && path === '/attendance/activity') {
+      if (user.role !== 'admin') throw fail(403, 'Only institution administrators can view attendance activity.');
+      if (!user.institutionId) throw fail(403, 'Assign this administrator to an institution first.');
+      const branchId = req.query.branchId ? requireUuid(req.query.branchId, 'Branch ID') : null;
+      const semesterId = req.query.semesterId ? requireUuid(req.query.semesterId, 'Semester ID') : null;
+      const courseIdFilter = req.query.courseId ? requireUuid(req.query.courseId, 'Course ID') : null;
+      if ((req.query.from && !validAttendanceDate(String(req.query.from)))
+        || (req.query.to && !validAttendanceDate(String(req.query.to)))) {
+        throw fail(400, 'Attendance activity dates must be valid calendar dates.');
+      }
+      if (req.query.from && req.query.to && String(req.query.from) > String(req.query.to)) {
+        throw fail(400, 'The activity start date must not be after its end date.');
+      }
+      const courses = await fetchAttendanceRows(() => supabaseApiClient()
+        .from('courses').select('id,branch_id,semester_id').eq('institution_id', user.institutionId).order('id'));
+      const courseMap = new Map(courses
+        .filter((course) => (!branchId || course.branch_id === branchId)
+          && (!semesterId || course.semester_id === semesterId)
+          && (!courseIdFilter || course.id === courseIdFilter))
+        .map((course) => [course.id, course]));
+      const courseIds = [...courseMap.keys()];
+      const sessions = [];
+      for (let index = 0; index < courseIds.length; index += 100) {
+        const courseChunk = courseIds.slice(index, index + 100);
+        sessions.push(...await fetchAttendanceRows(() => {
+          let query = supabaseApiClient().from('attendance_sessions')
+            .select('id,course_id,faculty_id,session_date,created_at').in('course_id', courseChunk).order('id');
+          if (req.query.from) query = query.gte('session_date', String(req.query.from));
+          if (req.query.to) query = query.lte('session_date', String(req.query.to));
+          return query;
+        }));
+      }
+      const activity = new Map();
+      for (const session of sessions) {
+        const course = courseMap.get(session.course_id);
+        if (!course) continue;
+        const key = `${session.course_id}:${session.faculty_id}`;
+        const entry = activity.get(key) || {
+          courseId: session.course_id,
+          branchId: course.branch_id,
+          semesterId: course.semester_id || null,
+          facultyId: session.faculty_id,
+          sessions: 0,
+          latestSessionDate: session.session_date,
+          latestCreatedAt: session.created_at,
+        };
+        entry.sessions += 1;
+        if (String(session.created_at) > String(entry.latestCreatedAt)) {
+          entry.latestSessionDate = session.session_date;
+          entry.latestCreatedAt = session.created_at;
+        }
+        activity.set(key, entry);
+      }
+      return res.json([...activity.values()]);
+    }
     if (method === 'GET' && path === '/attendance/summary') {
-      if (user.role === 'admin') throw fail(403, 'Administrators must use branch-scoped attendance reports.');
+      if (user.role !== 'student') throw fail(403, 'Attendance summaries are available to students only.');
       const client = supabaseApiClient();
-      const sessionQuery = client.from('attendance_sessions').select('id,course_id,session_date');
-      if (req.query.courseId) sessionQuery.eq('course_id', requireUuid(req.query.courseId, 'Course ID'));
-      if (req.query.from) sessionQuery.gte('session_date', String(req.query.from));
-      if (req.query.to) sessionQuery.lte('session_date', String(req.query.to));
-      const { data: sessions, error: sessionError } = await sessionQuery.limit(1000);
-      if (sessionError) throw sessionError;
-      const sessionIds = (sessions || []).map((session) => session.id);
+      const courseId = req.query.courseId ? requireUuid(req.query.courseId, 'Course ID') : null;
+      if ((req.query.from && !validAttendanceDate(String(req.query.from)))
+        || (req.query.to && !validAttendanceDate(String(req.query.to)))) {
+        throw fail(400, 'Attendance summary dates must be valid calendar dates.');
+      }
+      if (req.query.from && req.query.to && String(req.query.from) > String(req.query.to)) {
+        throw fail(400, 'The summary start date must not be after its end date.');
+      }
+      const sessions = await fetchAttendanceRows(() => {
+        let query = client.from('attendance_sessions').select('id,course_id,session_date').order('id');
+        if (courseId) query = query.eq('course_id', courseId);
+        if (req.query.from) query = query.gte('session_date', String(req.query.from));
+        if (req.query.to) query = query.lte('session_date', String(req.query.to));
+        return query;
+      });
+      const sessionIds = sessions.map((session) => session.id);
       if (!sessionIds.length) return res.json([]);
-      const { data, error } = await client.from('attendance_records')
-        .select('student_id,status,session_id').in('session_id', sessionIds);
-      if (error) throw error;
-      const sessionById = new Map((sessions || []).map((session) => [session.id, session]));
+      const data = [];
+      for (let index = 0; index < sessionIds.length; index += 100) {
+        const sessionChunk = sessionIds.slice(index, index + 100);
+        data.push(...await fetchAttendanceRows(() => client.from('attendance_records')
+          .select('student_id,status,session_id').in('session_id', sessionChunk).order('id')));
+      }
+      const sessionById = new Map(sessions.map((session) => [session.id, session]));
       const summary = new Map();
-      for (const record of data || []) {
+      for (const record of data) {
         const session = sessionById.get(record.session_id);
         const courseId = session?.course_id;
         if (!courseId) continue;
@@ -894,25 +1347,52 @@ export async function handleApiRequest(req, res, next) {
     if (method === 'GET' && match) {
       if (user.role !== 'instructor') throw fail(403, 'Only faculty can view an attendance roster.');
       const courseId = requireUuid(decodeURIComponent(match[1]), 'Course ID');
-      await requireAcademicCourseAccess(user, courseId);
-      const { data, error } = await supabaseApiClient()
-        .from('enrollments').select('student_id,profiles!inner(id,email)').eq('course_id', courseId).in('status', ['active', 'enrolled']);
-      if (error) throw error;
-      return res.json(data || []);
+      return res.json(await loadAttendanceRoster(user, courseId));
+    }
+    match = path.match(/^\/attendance\/courses\/([^/]+)\/template$/);
+    if (method === 'GET' && match) {
+      if (user.role !== 'instructor') throw fail(403, 'Only faculty can download attendance templates.');
+      const courseId = requireUuid(decodeURIComponent(match[1]), 'Course ID');
+      const format = req.query.format === 'csv' ? 'csv' : 'xlsx';
+      const roster = await loadAttendanceRoster(user, courseId);
+      const buffer = await attendanceTemplate(roster, format);
+      res.set('Content-Type', format === 'csv'
+        ? 'text/csv; charset=utf-8'
+        : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.set('Content-Disposition', `attachment; filename="attendance-template.${format}"`);
+      return res.send(buffer);
+    }
+    if (method === 'POST' && path === '/attendance/upload/preview') {
+      if (user.role !== 'instructor') throw fail(403, 'Only faculty can preview attendance uploads.');
+      const courseId = requireUuid(req.body?.courseId, 'Course ID');
+      if (!req.file || !Buffer.isBuffer(req.file.buffer)) throw fail(400, 'Select a CSV or XLSX attendance file.');
+      const roster = await loadAttendanceRoster(user, courseId);
+      const preview = await parseAttendanceUpload(req.file, roster);
+      return res.json(preview);
     }
     if (method === 'POST' && path === '/attendance/sessions') {
       if (user.role !== 'instructor') throw fail(403, 'Only faculty can create attendance sessions.');
       const courseId = requireUuid(req.body?.courseId, 'Course ID');
       await requireAcademicCourseAccess(user, courseId);
-      if (req.body?.facultyId && req.body.facultyId !== user.id) throw fail(403, 'Faculty may only create their own sessions.');
       const sessionDate = typeof req.body?.sessionDate === 'string' ? req.body.sessionDate : '';
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(sessionDate)) throw fail(400, 'A valid session date is required.');
-      const { data, error } = await supabaseApiClient().from('attendance_sessions').insert({
-        course_id: courseId,
-        faculty_id: user.id,
-        session_date: sessionDate,
-        title: requireText(req.body?.title || 'Lecture', 'Session title', 200),
-      }).select().single();
+      if (!validAttendanceDate(sessionDate)) throw fail(400, 'A valid session date is required.');
+      const title = requireText(req.body?.title || 'Lecture', 'Session title', 200);
+      const records = req.body?.records;
+      if (!Array.isArray(records) || records.length === 0 || records.length > 500) {
+        throw fail(400, 'Attendance records are required to create a session.');
+      }
+      const rpcRecords = validateAttendanceRecords(records);
+      const { data, error } = await supabaseApiClient().rpc('save_attendance_session', {
+        target_course_id: courseId,
+        target_session_date: sessionDate,
+        target_title: title,
+        target_records: rpcRecords,
+        target_session_id: null,
+        target_correction_reason: null,
+      });
+      if (error?.code === '23505') {
+        throw fail(409, 'An attendance session already exists for this course, date, and period. Open it from session history to review or correct it.');
+      }
       if (error) throw error;
       return res.status(201).json(data);
     }
@@ -921,42 +1401,30 @@ export async function handleApiRequest(req, res, next) {
       if (user.role !== 'instructor') throw fail(403, 'Administrators can view attendance through class reports only.');
       const session = await getAttendanceSession(user, requireUuid(decodeURIComponent(match[1]), 'Session ID'));
       if (session.faculty_id !== user.id) throw fail(403, 'Only the assigned faculty member can view this session.');
-      const { data, error } = await supabaseApiClient().from('attendance_records')
-        .select('id,student_id,status,marked_by,marked_at').eq('session_id', session.id);
-      if (error) throw error;
-      return res.json({ session, records: data || [] });
+      const records = await loadAttendanceSessionRecords(session.id);
+      const { data: corrections, error: correctionsError } = await supabaseApiClient()
+        .from('attendance_corrections')
+        .select('id,student_id,previous_status,new_status,reason,changed_by,created_at')
+        .eq('session_id', session.id).order('created_at', { ascending: false });
+      if (correctionsError) throw correctionsError;
+      return res.json({ session, records, corrections: corrections || [] });
     }
     if (method === 'PUT' && match) {
       if (user.role !== 'instructor') throw fail(403, 'Only faculty can save attendance.');
       const session = await getAttendanceSession(user, requireUuid(decodeURIComponent(match[1]), 'Session ID'));
       if (session.faculty_id !== user.id) throw fail(403, 'Only the assigned faculty member can edit this session.');
       if (!Array.isArray(req.body?.records) || req.body.records.length > 500) throw fail(400, 'Attendance records are required.');
-      const studentIds = req.body.records.map((record) => record?.studentId);
-      if (new Set(studentIds).size !== studentIds.length) throw fail(400, 'Duplicate students are not allowed.');
-      const adminClient = getAdminSupabaseClient();
-      const { data: course, error: courseError } = await adminClient.from('courses')
-        .select('institution_id').eq('id', session.course_id).maybeSingle();
-      if (courseError) throw courseError;
-      if (!course) throw fail(404, 'Course not found or unavailable to this account.');
-      const { data: enrollments, error: enrollmentError } = await adminClient.from('enrollments')
-        .select('student_id,profiles!inner(role,institution_id)')
-        .eq('course_id', session.course_id).in('student_id', studentIds).in('status', ['active', 'enrolled']);
-      if (enrollmentError) throw enrollmentError;
-      const enrolledIds = new Set((enrollments || [])
-        .filter((row) => row.profiles?.role === 'student'
-          && (!course.institution_id || row.profiles.institution_id === course.institution_id))
-        .map((row) => row.student_id));
-      if (studentIds.some((id) => !enrolledIds.has(id))) throw fail(400, 'Attendance can only be recorded for enrolled students.');
-      const allowedStatuses = new Set(['present', 'absent', 'late', 'excused']);
-      const rows = req.body.records.map((record) => ({
-        session_id: session.id,
-        student_id: requireUuid(record.studentId, 'Student ID'),
-        status: allowedStatuses.has(record.status) ? record.status : null,
-        marked_by: user.id,
-      }));
-      if (rows.some((row) => !row.status)) throw fail(400, 'Each attendance status must be valid.');
-      const { data, error } = await supabaseApiClient().from('attendance_records')
-        .upsert(rows, { onConflict: 'session_id,student_id' }).select();
+      const rpcRecords = validateAttendanceRecords(req.body.records);
+      const { data, error } = await supabaseApiClient().rpc('save_attendance_session', {
+        target_course_id: session.course_id,
+        target_session_date: session.session_date,
+        target_title: session.title,
+        target_records: rpcRecords,
+        target_session_id: session.id,
+        target_correction_reason: req.body?.correctionReason
+          ? requireText(req.body.correctionReason, 'Correction reason', 500)
+          : null,
+      });
       if (error) throw error;
       return res.json(data || []);
     }

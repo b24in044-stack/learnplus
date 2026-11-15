@@ -31,6 +31,8 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
   const [answers, setAnswers] = useState<Record<string, number>>({});
   const [timeRemainingSeconds, setTimeRemainingSeconds] = useState(assessment.durationMinutes * 60);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isStarting, setIsStarting] = useState(Boolean(assessment.aiGenerated));
+  const [startError, setStartError] = useState<string | null>(null);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -51,7 +53,29 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
   const totalQuestions = assessment.questions.length;
   const answeredCount = Object.keys(answers).length;
 
+  useEffect(() => {
+    if (!assessment.aiGenerated) return;
+    let active = true;
+    api.startPracticeAssessment(assessment.id).then(
+      () => {
+        if (active) setIsStarting(false);
+      },
+      (startFailure: unknown) => {
+        if (!active) return;
+        setStartError(startFailure instanceof Error ? startFailure.message : 'The assignment could not be started.');
+        setIsStarting(false);
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [assessment.aiGenerated, assessment.id]);
+
   const handleSubmit = async () => {
+    if (isStarting || startError) {
+      setError('Start the assignment before submitting it.');
+      return;
+    }
     if (isSubmittingRef.current) return;
     isSubmittingRef.current = true;
     setIsSubmitting(true);
@@ -78,6 +102,7 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
 
   // Safe timer lifecycle
   useEffect(() => {
+    if (isStarting || startError) return undefined;
     const timer = setInterval(() => {
       setTimeRemainingSeconds((prev) => {
         if (prev <= 1) {
@@ -90,7 +115,7 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
     }, 1000);
 
     return () => clearInterval(timer);
-  }, []);
+  }, [isStarting, startError]);
 
   const formatTime = (secs: number) => {
     const mins = Math.floor(secs / 60);
@@ -170,6 +195,29 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
       </div>
 
       {/* Current Question Body */}
+      {isStarting && <p className="text-xs text-[#64748B]" role="status">Starting your assignment…</p>}
+      {startError && (
+        <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-[#B91C1C]" role="alert">
+          {startError}
+          <button
+            type="button"
+            className="ml-2 underline font-semibold"
+            onClick={() => {
+              setStartError(null);
+              setIsStarting(true);
+              api.startPracticeAssessment(assessment.id).then(
+                () => setIsStarting(false),
+                (startFailure: unknown) => {
+                  setStartError(startFailure instanceof Error ? startFailure.message : 'The assignment could not be started.');
+                  setIsStarting(false);
+                },
+              );
+            }}
+          >
+            Retry
+          </button>
+        </div>
+      )}
       <div className="p-6 md:p-8 bg-white border border-[#E2E8F0] rounded-xl shadow-xs space-y-6">
         <div className="flex items-center justify-between text-xs text-[#64748B]">
           <span className="font-semibold text-[#4338CA]">
@@ -249,6 +297,7 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
             size="sm"
             icon={<Send className="w-3.5 h-3.5" />}
             isLoading={isSubmitting}
+            disabled={isStarting || Boolean(startError) || isSubmitting}
             onClick={() => setShowConfirmModal(true)}
             className="bg-[#15803D] hover:bg-green-800"
           >
@@ -272,7 +321,7 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
         isOpen={showConfirmModal}
         onClose={() => setShowConfirmModal(false)}
         title="Ready to Submit Assessment?"
-        description="Your responses will be transmitted to the backend assessment layer for official evaluation."
+        description="Your responses will be sent to backend grading. Incomplete drafts are not published as results."
         footer={
           <>
             <Button
@@ -287,6 +336,7 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
               variant="primary"
               size="sm"
               isLoading={isSubmitting}
+              disabled={isStarting || Boolean(startError) || isSubmitting}
               onClick={handleSubmit}
             >
               Confirm & Submit
@@ -301,9 +351,12 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
               <span className="font-bold tabular-nums">{answeredCount} of {totalQuestions}</span>
             </div>
             {answeredCount < totalQuestions && (
-              <div className="flex items-center gap-1.5 text-amber-800 font-medium pt-1">
-                <AlertTriangle className="w-3.5 h-3.5 text-[#B45309] shrink-0" />
-                <span>You have {totalQuestions - answeredCount} unanswered question(s).</span>
+              <div className="flex items-start gap-1.5 pt-1 text-amber-800">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#B45309]" />
+                <span>
+                  {totalQuestions - answeredCount} question(s) are unanswered. They will be saved as an in-progress draft;
+                  no result is graded or shared with Learning Agent until every question is answered.
+                </span>
               </div>
             )}
           </div>
@@ -311,7 +364,7 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
       </Dialog>
 
       {error && (
-        <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-[#B91C1C]">
+        <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-[#B91C1C]" role="alert">
           {error}
         </div>
       )}

@@ -1354,7 +1354,7 @@ app.post('/api/v1/auth/logout', requireAuth, (req, res) => {
 });
 
 async function dispatchAgentRequest(req, res) {
-  const allowedPath = /^\/(?:agents\/(?:status|tutor|execute|personalized-learning|insights|recommendations|faculty\/assessments|assessments(?:\/[0-9a-f-]+(?:\/submit)?)?)|documents\/ingest)$/i;
+  const allowedPath = /^\/(?:agents\/(?:status|tutor|execute|personalized-learning|insights|recommendations|faculty\/assessments|assessments(?:\/[0-9a-f-]+(?:\/(?:submit|start))?)?|learning\/assignments(?:\/[0-9a-f-]+(?:\/retry-analysis)?)?)|documents\/ingest)$/i;
   if (!allowedPath.test(req.path)) {
     return res.status(404).json({ detail: 'Agent endpoint not found.', request_id: req.requestId });
   }
@@ -1371,9 +1371,17 @@ app.use('/api/v1', (req, res, next) => {
       if (!res.headersSent) res.status(404).json({ detail: 'API endpoint not found.' });
     });
   };
+  if (req.method === 'POST' && req.path === '/attendance/upload/preview') {
+    return requireAuth(req, res, () => requireRole('instructor')(req, res, () =>
+      uploadRateLimit(req, res, () =>
+        upload.single('file')(req, res, (error) => error ? next(error) : dispatch())
+      )
+    ));
+  }
   if (req.method === 'POST' && (/^\/courses\/[^/]+\/documents$/.test(req.path)
     || /^\/courses\/[^/]+\/materials$/.test(req.path)
-    || /^\/projects\/[^/]+\/documents$/.test(req.path))) {
+    || /^\/projects\/[^/]+\/documents$/.test(req.path)
+    )) {
     return requireAuth(req, res, () => uploadRateLimit(req, res, () =>
       upload.single('file')(req, res, (error) => error ? next(error) : dispatch())
     ));

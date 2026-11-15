@@ -128,12 +128,14 @@ class AgentExecutionRequest(BaseModel):
     use_documents: bool = False
     course_id: str | None = Field(default=None, min_length=1, max_length=128)
     topic: str | None = Field(default=None, min_length=1, max_length=160)
+    topics: list[str] = Field(default_factory=list, max_length=20)
     difficulty: Literal["Beginner", "Intermediate", "Advanced"] = "Intermediate"
     learning_objectives: list[str] = Field(default_factory=list, max_length=8)
     question_count: int = Field(default=5, ge=1, le=10)
     question_format: Literal["mcq", "descriptive"] = "mcq"
     assessment_id: str | None = Field(default=None, min_length=1, max_length=128)
     answers: dict[str, int | str] = Field(default_factory=dict, max_length=10)
+    time_spent_seconds: int = Field(default=0, ge=0, le=86400)
 
     @field_validator("message", "topic", "course_id", "assessment_id")
     @classmethod
@@ -153,6 +155,16 @@ class AgentExecutionRequest(BaseModel):
             raise ValueError("Learning objectives must be non-empty strings of at most 300 characters.")
         return cleaned
 
+    @field_validator("topics")
+    @classmethod
+    def valid_topics(cls, values: list[str]) -> list[str]:
+        cleaned = [value.strip() for value in values if isinstance(value, str) and value.strip()]
+        if len(cleaned) != len(values) or any(len(value) > 160 for value in cleaned):
+            raise ValueError("Topics must be non-empty strings of at most 160 characters.")
+        if len({value.casefold() for value in cleaned}) != len(cleaned):
+            raise ValueError("Topics must not contain duplicates.")
+        return cleaned
+
     @model_validator(mode="after")
     def validate_task_fields(self):
         if self.task_type in {
@@ -166,8 +178,6 @@ class AgentExecutionRequest(BaseModel):
             raise ValueError("The selected learning task does not accept message or assessment fields.")
         if self.task_type in {"assessment_generate", "knowledge_graph"} and not self.course_id:
             raise ValueError("A course ID is required for this task.")
-        if self.task_type == "assessment_generate" and not self.topic:
-            raise ValueError("A topic is required to generate a practice assessment.")
         if self.task_type == "assessment_evaluate" and not self.assessment_id:
             raise ValueError("An assessment ID is required to evaluate a submission.")
         if self.task_type == "assessment_evaluate" and self.message:
@@ -195,18 +205,39 @@ class AssessmentGenerateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     course_id: str = Field(min_length=1, max_length=128)
-    topic: str = Field(min_length=1, max_length=160)
+    topic: str | None = Field(default=None, min_length=1, max_length=160)
+    topics: list[str] = Field(default_factory=list, max_length=20)
     difficulty: Literal["Beginner", "Intermediate", "Advanced"] = "Intermediate"
     learning_objectives: list[str] = Field(default_factory=list, max_length=8)
     question_count: int = Field(default=5, ge=1, le=10)
     question_format: Literal["mcq", "descriptive"] = "mcq"
 
-    @field_validator("course_id", "topic")
+    @field_validator("course_id")
     @classmethod
     def nonblank_values(cls, value: str) -> str:
         cleaned = value.strip()
         if not cleaned:
             raise ValueError("This value cannot be blank.")
+        return cleaned
+
+    @field_validator("topic")
+    @classmethod
+    def nonblank_topic(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Topic cannot be blank.")
+        return cleaned
+
+    @field_validator("topics")
+    @classmethod
+    def valid_topics(cls, values: list[str]) -> list[str]:
+        cleaned = [value.strip() for value in values if isinstance(value, str) and value.strip()]
+        if len(cleaned) != len(values) or any(len(value) > 160 for value in cleaned):
+            raise ValueError("Topics must be non-empty strings of at most 160 characters.")
+        if len({value.casefold() for value in cleaned}) != len(cleaned):
+            raise ValueError("Topics must not contain duplicates.")
         return cleaned
 
     @field_validator("learning_objectives")
@@ -242,9 +273,10 @@ class FacultyAssessmentGenerateRequest(BaseModel):
 
 
 class AssessmentSubmissionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     answers: dict[str, int | str] = Field(max_length=10)
+    time_spent_seconds: int = Field(default=0, alias="timeSpentSeconds", ge=0, le=86400)
 
 
 class AgentAvailability(BaseModel):

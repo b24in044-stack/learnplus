@@ -15,7 +15,7 @@ import {
   ChevronRight,
   Check
 } from 'lucide-react';
-import { Course, StudyPlannerSession, StudyPlannerTask } from '../../types';
+import { Course, LearningAssignmentOverview, StudyPlannerSession, StudyPlannerTask } from '../../types';
 import { api } from '../../services/api';
 import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
@@ -40,6 +40,9 @@ interface StudyPlannerProps {
 export const StudyPlanner: React.FC<StudyPlannerProps> = ({ courses, onNavigate }) => {
   const [sessions, setSessions] = useState<StudyPlannerSession[]>([]);
   const [tasks, setTasks] = useState<StudyPlannerTask[]>([]);
+  const [learningPlan, setLearningPlan] = useState<LearningAssignmentOverview['personalizedLearningPlan']>([]);
+  const [isLearningPlanLoading, setIsLearningPlanLoading] = useState(true);
+  const [learningPlanError, setLearningPlanError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
   const [viewMode, setViewMode] = useState<'calendar' | 'agenda'>('calendar');
@@ -72,6 +75,27 @@ export const StudyPlanner: React.FC<StudyPlannerProps> = ({ courses, onNavigate 
       }
     };
     loadData();
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    api.getLearningAssignmentHistory().then(
+      (history) => {
+        if (active) setLearningPlan(history.overview.personalizedLearningPlan);
+      },
+      (error: unknown) => {
+        if (active) {
+          setLearningPlanError(
+            error instanceof Error ? error.message : 'Learning Agent recommendations could not be loaded.',
+          );
+        }
+      },
+    ).finally(() => {
+      if (active) setIsLearningPlanLoading(false);
+    });
+    return () => {
+      active = false;
+    };
   }, []);
 
   const handleToggleSession = async (id: string) => {
@@ -199,6 +223,40 @@ export const StudyPlanner: React.FC<StudyPlannerProps> = ({ courses, onNavigate 
       </div>
 
       {errorMessage && <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700" role="alert">{errorMessage}</p>}
+
+      <section
+        className="rounded-xl border border-indigo-200 bg-indigo-50/60 p-5"
+        aria-label="Personalized learning plan"
+      >
+        <div className="flex items-center gap-2">
+          <Sparkles className="h-4 w-4 text-[#4338CA]" aria-hidden="true" />
+          <h2 className="text-sm font-bold text-[#0F172A]">Learning Agent recommendations</h2>
+        </div>
+        <p className="mt-1 text-xs text-[#64748B]">
+          Updated from your published, backend-graded assignments. Mastery is estimated only when sufficient evidence exists.
+        </p>
+        {isLearningPlanLoading ? (
+          <p className="mt-3 text-xs text-[#64748B]" role="status">Loading personalized recommendations…</p>
+        ) : learningPlanError ? (
+          <p className="mt-3 text-xs text-red-700" role="alert">{learningPlanError}</p>
+        ) : learningPlan.length ? (
+          <ul className="mt-3 grid gap-3 md:grid-cols-2">
+            {learningPlan.map((item) => (
+              <li key={`${item.courseId || 'course'}-${item.topic}`} className="rounded-lg border border-indigo-100 bg-white p-3">
+                <p className="text-xs font-bold text-[#0F172A]">
+                  {item.topic}{item.courseCode ? ` · ${item.courseCode}` : ''}
+                </p>
+                <p className="mt-1 text-xs text-[#475569]">{item.reason}</p>
+                <p className="mt-1 text-xs text-[#475569]">{item.action}</p>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-3 text-xs text-[#64748B]">
+            Complete an assignment to get evidence-based study recommendations.
+          </p>
+        )}
+      </section>
 
       {/* KPI Stats Strip */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

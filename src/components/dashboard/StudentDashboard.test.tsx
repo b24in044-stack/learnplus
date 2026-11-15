@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
-import { AnalyticsData, Course, StudyPlannerTask } from '../../types';
+import { AnalyticsData, Course, LearningAssignmentHistory, StudyPlannerTask } from '../../types';
 import { StudentDashboard } from './StudentDashboard';
 
 vi.mock('../../context/AuthContext', () => ({ useAuth: vi.fn() }));
@@ -13,6 +13,7 @@ vi.mock('../../services/api', () => ({
     getCourses: vi.fn(),
     getAnalytics: vi.fn(),
     getRecommendations: vi.fn(),
+    getLearningAssignmentHistory: vi.fn(),
     getStudyTasks: vi.fn(),
     toggleStudyTask: vi.fn(),
   },
@@ -57,6 +58,22 @@ const analytics: AnalyticsData = {
   weakTopics: [],
   conceptMasteryList: [],
 };
+const assignmentHistory: LearningAssignmentHistory = {
+  overview: {
+    totalAssignmentsCompleted: 0,
+    totalQuestionsAttempted: 0,
+    correctAnswers: 0,
+    overallAccuracy: null,
+    overallTopicMastery: [],
+    topicsRequiringImprovement: [],
+    strengths: [],
+    repeatedIncorrectTopics: [],
+    difficultyPerformance: [],
+    personalizedLearningPlan: [],
+    evidenceNote: '',
+  },
+  completedAssignments: [],
+};
 
 const localDateKey = (date: Date) =>
   `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
@@ -91,6 +108,7 @@ describe('student dashboard', () => {
     vi.mocked(api.getCourses).mockResolvedValue(courses);
     vi.mocked(api.getAnalytics).mockResolvedValue(analytics);
     vi.mocked(api.getRecommendations).mockResolvedValue([]);
+    vi.mocked(api.getLearningAssignmentHistory).mockResolvedValue(assignmentHistory);
     vi.mocked(api.getStudyTasks).mockResolvedValue(initialTasks);
     vi.mocked(api.toggleStudyTask).mockResolvedValue([{ ...initialTasks[0], completed: true }]);
   });

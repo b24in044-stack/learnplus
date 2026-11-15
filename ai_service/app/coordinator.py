@@ -229,6 +229,7 @@ class Coordinator:
                 self._agents.assessment.generate(
                     course_id=payload["course_id"],
                     topic=payload["topic"],
+                    topics=payload.get("topics") or [],
                     difficulty=payload["difficulty"],
                     learning_objectives=payload["learning_objectives"],
                     question_count=payload["question_count"],
@@ -239,22 +240,34 @@ class Coordinator:
             data = await run(
                 "assessment",
                 "Graded the student's AI-generated practice submission.",
-                self._agents.assessment.evaluate(payload["assessment_id"], payload["answers"]),
+                self._agents.assessment.evaluate(
+                    payload["assessment_id"],
+                    payload["answers"],
+                    payload.get("time_spent_seconds", 0),
+                ),
             )
-            mastery = data.get("masteryUpdates", [])
-            analytics = await run(
-                "learning_analytics",
-                "Recomputed learning insights after the practice submission.",
-                self._agents.learning_analytics.analyze(data.get("courseId")),
+        elif task_type == "assignment_learning_history":
+            data = await run(
+                "assignment_learning",
+                "Retrieved only this student's published, backend-graded assignments and aggregate performance.",
+                self._agents.assignment_learning.history(),
             )
-            recommendations = await run(
-                "recommendation",
-                "Selected follow-up practice from updated concept evidence.",
-                self._agents.recommendation.recommend(data.get("courseId")),
+        elif task_type == "assignment_learning_detail":
+            data = await run(
+                "assignment_learning",
+                "Retrieved the selected student's published assignment and its isolated question-level analysis.",
+                self._agents.assignment_learning.assignment_detail(payload["assessment_id"]),
             )
-            data["analytics"] = analytics
-            data["recommendations"] = recommendations
-            data["masteryUpdates"] = mastery
+            if data is None:
+                raise LookupError("Completed assignment was not found.")
+        elif task_type == "assignment_learning_retry":
+            data = await run(
+                "assignment_learning",
+                "Retried learning analysis without changing the saved, published assignment result.",
+                self._agents.assignment_learning.analyze_completed_assignment(payload["assessment_id"]),
+            )
+            if data.get("status") == "NOT_ELIGIBLE":
+                raise LookupError("Only published graded assignments can be analyzed.")
         else:
             raise UnsupportedIntentError("The requested coordinator task is not implemented.")
 

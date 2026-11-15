@@ -27,7 +27,9 @@ import {
   VerifiedSubjectMark,
   VerifiedSemesterResult,
   CourseMaterial,
-  CourseMaterialCategory
+  CourseMaterialCategory,
+  LearningAssignmentDetail,
+  LearningAssignmentHistory
 } from '../types';
 import {
   INITIAL_COURSES,
@@ -140,7 +142,6 @@ export class ApiClient {
   private token: string | null = null;
   private isLiveAvailable: boolean | null = null;
   private lastPingTime: number = 0;
-  private readonly generatedPracticeAssessments = new Map<string, Assessment>();
 
   constructor() {
     this.baseUrl = localStorage.getItem(STORAGE_KEYS.API_BASE_URL) || DEFAULT_API_BASE_URL;
@@ -845,32 +846,162 @@ export class ApiClient {
     throw res.error ?? new ApiError(503, 'Attendance summary is unavailable.');
   }
 
-  public async getAttendanceReport(filters: { branchId?: string; courseId?: string; from?: string; to?: string } = {}): Promise<Array<{ courseId: string; branchId: string; studentId: string; total: number; present: number; absent: number; late: number; excused: number; percentage: number }>> {
+  public async getAttendanceReport(filters: { branchId?: string; semesterId?: string; courseId?: string; from?: string; to?: string } = {}): Promise<Array<{ courseId: string; branchId: string; semesterId: string | null; date: string; studentId: string; total: number; present: number; absent: number; late: number; excused: number; percentage: number }>> {
     const query = new URLSearchParams(Object.entries(filters).filter(([, value]) => value) as Array<[string, string]>).toString();
-    const res = await this.request<Array<{ courseId: string; branchId: string; studentId: string; total: number; present: number; absent: number; late: number; excused: number; percentage: number }>>(`/attendance/report${query ? `?${query}` : ''}`);
+    const res = await this.request<Array<{ courseId: string; branchId: string; semesterId: string | null; date: string; studentId: string; total: number; present: number; absent: number; late: number; excused: number; percentage: number }>>(`/attendance/report${query ? `?${query}` : ''}`);
     if (res.isLive && res.data) return res.data;
     throw res.error ?? new ApiError(503, 'Attendance report is unavailable.');
   }
 
-  public async getAttendanceRoster(courseId: string): Promise<Array<{ student_id: string; profiles?: { id: string; email: string } }>> {
-    const res = await this.request<Array<{ student_id: string; profiles?: { id: string; email: string } }>>(`/attendance/courses/${encodeURIComponent(courseId)}/roster`);
+  public async getAttendanceActivity(filters: { branchId?: string; semesterId?: string; courseId?: string; from?: string; to?: string } = {}): Promise<Array<{
+    courseId: string;
+    branchId: string;
+    semesterId: string | null;
+    facultyId: string;
+    sessions: number;
+    latestSessionDate: string;
+    latestCreatedAt: string;
+  }>> {
+    const query = new URLSearchParams(Object.entries(filters).filter(([, value]) => value) as Array<[string, string]>).toString();
+    const res = await this.request<Array<{
+      courseId: string;
+      branchId: string;
+      semesterId: string | null;
+      facultyId: string;
+      sessions: number;
+      latestSessionDate: string;
+      latestCreatedAt: string;
+    }>>(`/attendance/activity${query ? `?${query}` : ''}`);
+    if (res.isLive && res.data) return res.data;
+    throw res.error ?? new ApiError(503, 'Attendance activity is unavailable.');
+  }
+
+  public async getAttendanceRoster(courseId: string): Promise<Array<{ student_id: string; studentCode: string; studentName: string; email: string }>> {
+    const res = await this.request<Array<{ student_id: string; studentCode: string; studentName: string; email: string }>>(`/attendance/courses/${encodeURIComponent(courseId)}/roster`);
     if (res.isLive && res.data) return res.data;
     throw res.error ?? new ApiError(503, 'Attendance roster is unavailable.');
   }
 
-  public async createAttendanceSession(courseId: string, sessionDate: string, title: string): Promise<Record<string, unknown>> {
-    const res = await this.request<Record<string, unknown>>('/attendance/sessions', {
+  public async previewAttendanceUpload(courseId: string, file: File): Promise<{
+    totalRows: number;
+    validCount: number;
+    invalidCount: number;
+    duplicateCount: number;
+    unknownCount: number;
+    rows: Array<{
+      rowNumber: number | null;
+      studentId: string | null;
+      studentCode: string | null;
+      studentName: string;
+      email: string;
+      status: string;
+      issues: string[];
+    }>;
+    validRecords: Array<{ studentId: string; status: string }>;
+  }> {
+    const formData = new FormData();
+    formData.append('courseId', courseId);
+    formData.append('file', file);
+    const res = await this.request<{
+      totalRows: number;
+      validCount: number;
+      invalidCount: number;
+      duplicateCount: number;
+      unknownCount: number;
+      rows: Array<{
+        rowNumber: number | null;
+        studentId: string | null;
+        studentCode: string | null;
+        studentName: string;
+        email: string;
+        status: string;
+        issues: string[];
+      }>;
+      validRecords: Array<{ studentId: string; status: string }>;
+    }>('/attendance/upload/preview', { method: 'POST', body: formData }, true);
+    if (res.isLive && res.data) return res.data;
+    throw res.error ?? new ApiError(503, 'Attendance upload preview is unavailable.');
+  }
+
+  public async downloadAttendanceTemplate(courseId: string, format: 'csv' | 'xlsx'): Promise<void> {
+    if (!isDemoMode()) await this.getFreshAccessToken();
+    const headers: Record<string, string> = { Accept: '*/*' };
+    if (this.token) headers.Authorization = `Bearer ${this.token}`;
+    const response = await fetch(
+      `${this.baseUrl}/attendance/courses/${encodeURIComponent(courseId)}/template?format=${format}`,
+      { headers },
+    );
+    if (!response.ok) {
+      let detail = response.statusText;
+      try {
+        const body = await response.json() as { detail?: string; message?: string };
+        detail = body.detail || body.message || detail;
+      } catch {
+        // Keep the HTTP status as the surfaced error when no JSON body is returned.
+      }
+      throw new ApiError(response.status, `HTTP ${response.status}: ${detail}`, detail);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `attendance-template.${format}`;
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  public async createAttendanceSession(
+    courseId: string,
+    sessionDate: string,
+    title: string,
+    records: Array<{ studentId: string; status: string }>,
+  ): Promise<{ session: Record<string, unknown>; records: Array<Record<string, unknown>> }> {
+    const res = await this.request<{ session: Record<string, unknown>; records: Array<Record<string, unknown>> }>('/attendance/sessions', {
       method: 'POST',
-      body: JSON.stringify({ courseId, sessionDate, title }),
+      body: JSON.stringify({ courseId, sessionDate, title, records }),
     });
     if (res.isLive && res.data) return res.data;
     throw res.error ?? new ApiError(503, 'Attendance session could not be created.');
   }
 
-  public async saveAttendance(sessionId: string, records: Array<{ studentId: string; status: string }>): Promise<void> {
+  public async getAttendanceSession(sessionId: string): Promise<{
+    session: Record<string, unknown>;
+    records: Array<{
+      id: string;
+      student_id: string;
+      status: string;
+      marked_at: string;
+      studentCode: string;
+      studentName: string;
+      email: string;
+    }>;
+    corrections: Array<Record<string, unknown>>;
+  }> {
+    const res = await this.request<{
+      session: Record<string, unknown>;
+      records: Array<{
+        id: string;
+        student_id: string;
+        status: string;
+        marked_at: string;
+        studentCode: string;
+        studentName: string;
+        email: string;
+      }>;
+      corrections: Array<Record<string, unknown>>;
+    }>(`/attendance/sessions/${encodeURIComponent(sessionId)}`);
+    if (res.isLive && res.data) return res.data;
+    throw res.error ?? new ApiError(503, 'Attendance session details are unavailable.');
+  }
+
+  public async saveAttendance(
+    sessionId: string,
+    records: Array<{ studentId: string; status: string }>,
+    correctionReason: string,
+  ): Promise<void> {
     const res = await this.request(`/attendance/sessions/${encodeURIComponent(sessionId)}`, {
       method: 'PUT',
-      body: JSON.stringify({ records }),
+      body: JSON.stringify({ records, correctionReason }),
     });
     if (!res.isLive) throw res.error ?? new ApiError(503, 'Attendance could not be saved.');
   }
@@ -1388,11 +1519,11 @@ export class ApiClient {
 
   public async submitAssessment(submission: AssessmentSubmission): Promise<AssessmentResult> {
     if (submission.aiGenerated) {
-      const assessment = this.generatedPracticeAssessments.get(submission.assessmentId);
-      if (!assessment) {
-        throw new ApiError(404, 'This generated practice assessment has expired. Generate it again to continue.');
-      }
-      const workflow = await this.submitPracticeAssessment(submission.assessmentId, submission.answers);
+      const workflow = await this.submitPracticeAssessment(
+        submission.assessmentId,
+        submission.answers,
+        submission.timeSpentSeconds,
+      );
       const result = workflow.data;
       const rawQuestions = result.questionResults;
       if (
@@ -1406,63 +1537,72 @@ export class ApiClient {
         if (!isRecord(item) || typeof item.questionId !== 'string' || typeof item.questionText !== 'string') {
           return [];
         }
-        const score = typeof item.score === 'number' ? item.score : 0;
-        const selectedOption = submission.answers[item.questionId];
         return [{
           questionId: item.questionId,
           questionText: item.questionText,
-          selectedOption: typeof selectedOption === 'number' ? selectedOption : -1,
-          isCorrect: score >= 70,
-          explanation: typeof item.feedback === 'string' ? item.feedback : '',
+          selectedOption: typeof item.selectedOption === 'number' ? item.selectedOption : -1,
+          selectedAnswer: typeof item.selectedAnswer === 'string' || typeof item.selectedAnswer === 'number'
+            ? item.selectedAnswer
+            : '',
+          correctOption: typeof item.correctOption === 'number' ? item.correctOption : undefined,
+          correctAnswer: typeof item.correctAnswer === 'string' ? item.correctAnswer : undefined,
+          isCorrect: typeof item.isCorrect === 'boolean' ? item.isCorrect : undefined,
+          explanation: typeof item.explanation === 'string' ? item.explanation : '',
+          topic: typeof item.topic === 'string' ? item.topic : '',
+          score: typeof item.score === 'number' ? item.score : 0,
         }];
       });
       if (questionResults.length !== result.totalQuestions) {
         throw new ApiError(502, 'The AI service returned an incomplete practice assessment result.');
       }
-      const topicScores = new Map<string, { score: number; total: number }>();
-      for (const [index, item] of rawQuestions.entries()) {
-        if (!isRecord(item) || typeof item.topic !== 'string') continue;
-        const topic = topicScores.get(item.topic) || { score: 0, total: 0 };
-        topic.total += 1;
-        if (typeof item.score === 'number' && item.score >= 70) topic.score += 1;
-        topicScores.set(item.topic, topic);
-      }
-      const followUpList = isRecord(result.recommendations)
-        && Array.isArray(result.recommendations.recommendations)
-        ? result.recommendations.recommendations
+      const topicBreakdown = Array.isArray(result.topicBreakdown)
+        ? result.topicBreakdown.flatMap((item) => {
+          if (!isRecord(item) || typeof item.topic !== 'string'
+            || typeof item.score !== 'number' || typeof item.total !== 'number'
+            || typeof item.percentage !== 'number') return [];
+          return [{
+            topic: item.topic,
+            score: item.score,
+            total: item.total,
+            percentage: item.percentage,
+          }];
+        })
         : [];
-      const followUp = followUpList.find(isRecord);
-      const suggestedTopic = typeof followUp?.topic === 'string'
-        ? followUp.topic
-        : assessment.topic;
-      this.generatedPracticeAssessments.delete(submission.assessmentId);
+      const followUp = isRecord(result.recommendedFollowUp) ? result.recommendedFollowUp : {};
+      const suggestedTopic = typeof followUp.topic === 'string' ? followUp.topic : 'your completed topics';
       return {
-        submissionId: typeof result.submissionId === 'string' ? result.submissionId : `practice-${Date.now()}`,
-        assessmentId: assessment.id,
-        assessmentTitle: assessment.title,
-        courseCode: assessment.courseCode,
-        score: questionResults.filter((item) => item.isCorrect).length,
+        submissionId: typeof result.submissionId === 'string' ? result.submissionId : '',
+        assessmentId: submission.assessmentId,
+        courseId: typeof result.courseId === 'string' ? result.courseId : undefined,
+        assessmentTitle: typeof result.assessmentTitle === 'string' ? result.assessmentTitle : 'Practice assignment',
+        courseCode: typeof result.courseCode === 'string' ? result.courseCode : '',
+        score: typeof result.marksObtained === 'number'
+          ? result.marksObtained
+          : questionResults.filter((item) => item.isCorrect).length,
+        marksObtained: typeof result.marksObtained === 'number' ? result.marksObtained : undefined,
+        maximumScore: typeof result.maximumScore === 'number' ? result.maximumScore : result.totalQuestions,
         totalQuestions: result.totalQuestions,
         percentage: result.percentage,
-        passed: result.percentage >= assessment.passingScore,
-        completedAt: typeof result.completedAt === 'string' ? result.completedAt : new Date().toISOString(),
-        timeSpentSeconds: submission.timeSpentSeconds,
-        topicBreakdown: [...topicScores.entries()].map(([topic, value]) => ({
-          topic,
-          score: value.score,
-          total: value.total,
-          percentage: Math.round(value.score / value.total * 100),
-        })),
+        passed: result.percentage >= 70,
+        completedAt: typeof result.completedAt === 'string' ? result.completedAt : '',
+        timeSpentSeconds: typeof result.timeSpentSeconds === 'number'
+          ? result.timeSpentSeconds
+          : submission.timeSpentSeconds,
+        topicBreakdown,
         questionResults,
         recommendedFollowUp: {
           topic: suggestedTopic,
-          reason: typeof followUp?.reason === 'string'
-            ? followUp.reason
-            : 'Review the topics identified in your practice feedback.',
-          practicePrompt: `Generate new practice questions for ${suggestedTopic}.`,
+          reason: typeof followUp.reason === 'string' ? followUp.reason : 'Review the topics identified in your results.',
+          practicePrompt: typeof followUp.practicePrompt === 'string'
+            ? followUp.practicePrompt
+            : `Review ${suggestedTopic} before your next assignment.`,
         },
         aiGenerated: true,
         official: false,
+        status: typeof result.status === 'string' ? result.status : undefined,
+        learningAnalysisStatus: typeof result.learningAnalysisStatus === 'string'
+          ? result.learningAnalysisStatus
+          : undefined,
       };
     }
 
@@ -1490,7 +1630,7 @@ export class ApiClient {
       return {
         questionId: q.id,
         questionText: q.questionText,
-        selectedOption: selected !== undefined ? selected : -1,
+        selectedOption: typeof selected === 'number' ? selected : -1,
         correctOption: correctOption ?? -1,
         isCorrect,
         explanation: q.explanation
@@ -1593,7 +1733,8 @@ export class ApiClient {
   public async generatePracticeAssessment(input: {
     courseId: string;
     courseCode?: string;
-    topic: string;
+    topic?: string;
+    topics?: string[];
     difficulty: Assessment['difficulty'];
     learningObjectives?: string[];
     questionCount?: number;
@@ -1603,6 +1744,7 @@ export class ApiClient {
       body: JSON.stringify({
         course_id: input.courseId,
         topic: input.topic,
+        topics: input.topics || [],
         difficulty: input.difficulty,
         learning_objectives: input.learningObjectives || [],
         question_count: input.questionCount || 5,
@@ -1634,7 +1776,6 @@ export class ApiClient {
         topicTag: question.topic,
       })),
     };
-    this.generatedPracticeAssessments.set(assessment.id, assessment);
     return {
       ...data,
       courseCode: assessment.courseCode,
@@ -1646,14 +1787,41 @@ export class ApiClient {
   public async submitPracticeAssessment(
     assessmentId: string,
     answers: Record<string, number | string>,
+    timeSpentSeconds = 0,
   ): Promise<AgentWorkflowResult> {
     return this.requestAgent<AgentWorkflowResult>(
       `/agents/assessments/${encodeURIComponent(assessmentId)}/submit`,
       {
         method: 'POST',
-        body: JSON.stringify({ answers }),
+        body: JSON.stringify({ answers, timeSpentSeconds }),
       },
     );
+  }
+
+  public async startPracticeAssessment(assessmentId: string): Promise<void> {
+    await this.requestAgent<{ assessmentId: string; status: string }>(
+      `/agents/assessments/${encodeURIComponent(assessmentId)}/start`,
+      { method: 'POST' },
+    );
+  }
+
+  public async getLearningAssignmentHistory(): Promise<LearningAssignmentHistory> {
+    return this.requestAgent<LearningAssignmentHistory>('/agents/learning/assignments');
+  }
+
+  public async getLearningAssignmentDetail(assessmentId: string): Promise<LearningAssignmentDetail> {
+    return this.requestAgent<LearningAssignmentDetail>(
+      `/agents/learning/assignments/${encodeURIComponent(assessmentId)}`,
+    );
+  }
+
+  public async retryLearningAssignmentAnalysis(assessmentId: string): Promise<{
+    status: string;
+    message?: string;
+  }> {
+    return this.requestAgent(`/agents/learning/assignments/${encodeURIComponent(assessmentId)}/retry-analysis`, {
+      method: 'POST',
+    });
   }
 
   // --- 7. LEARNING PATH (`GET /learning-path` or `GET /courses/{id}/learning-path`) ---
