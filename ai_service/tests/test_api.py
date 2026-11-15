@@ -153,6 +153,57 @@ def test_chat_persists_provider_answer_and_returns_execution_metadata():
     assert store.saved[3]["provider"] == "fake-unit-provider"
 
 
+def test_faculty_can_use_tutor_with_verified_identity_and_owned_conversation():
+    settings = Settings(
+        _env_file=None,
+        groq_api_key=SecretStr("private-key"),
+        max_output_tokens=120,
+        max_history_messages=5,
+    )
+
+    async def authenticate(authorization, _settings):
+        if authorization != "Bearer valid-test-token":
+            raise UnauthorizedError("A valid Supabase access token is required.")
+        return AuthenticatedUser(id=USER_ID, role="faculty")
+
+    store = FakeStore(settings, "valid-test-token", USER_ID)
+    client = TestClient(create_app(
+        settings,
+        provider_override=FakeProvider(),
+        auth_override=authenticate,
+        store_factory=lambda _settings, token, user_id: store,
+    ))
+    session_id = uuid4()
+    response = client.post(
+        "/api/v1/agents/tutor",
+        headers={"Authorization": "Bearer valid-test-token"},
+        json={"session_id": str(session_id), "message": "Explain binary search."},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["session_id"] == str(session_id)
+    assert store.saved[1] == "Explain binary search."
+
+
+def test_faculty_can_load_tutor_agent_status():
+    async def authenticate(authorization, _settings):
+        assert authorization == "Bearer faculty-token"
+        return AuthenticatedUser(id=USER_ID, role="faculty")
+
+    client = TestClient(create_app(
+        Settings(_env_file=None, groq_api_key=SecretStr("private-key")),
+        provider_override=FakeProvider(),
+        auth_override=authenticate,
+    ))
+    response = client.get(
+        "/api/v1/agents/status",
+        headers={"Authorization": "Bearer faculty-token"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["agents"][0]["agent_id"] == "tutor"
+
+
 def test_service_returns_unavailable_without_configured_provider():
     settings = Settings(_env_file=None)
     async def authenticate(authorization, _settings):

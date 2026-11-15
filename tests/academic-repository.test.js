@@ -15,6 +15,7 @@ import {
   classifySupabaseError,
   handleApiRequest,
 } from '../server/api.js';
+import { runWithSupabaseRequestClient } from '../server/supabase.js';
 
 test('academic filters accept only supported bounded string values', () => {
   assert.deepEqual(normalizeAcademicFilters({
@@ -199,6 +200,51 @@ test('academic API routes reject non-student roles before reading student record
 
   assert.equal(response.statusCode, 403);
   assert.match(response.body.detail, /permission/);
+});
+
+test('faculty tutor history is allowed while administrator tutor history remains forbidden', async () => {
+  const client = {
+    from() {
+      return {
+        select() { return this; },
+        eq() { return this; },
+        async range() { return { data: [], error: null }; },
+      };
+    },
+  };
+  const createResponse = () => ({
+    statusCode: 200,
+    body: null,
+    status(code) {
+      this.statusCode = code;
+      return this;
+    },
+    json(body) {
+      this.body = body;
+      return this;
+    },
+  });
+  const facultyResponse = createResponse();
+  await runWithSupabaseRequestClient(client, () => handleApiRequest({
+    isDemoSession: false,
+    method: 'GET',
+    path: '/chat/sessions',
+    query: {},
+    user: { id: 'faculty-uid', role: 'instructor' },
+  }, facultyResponse, () => assert.fail('Faculty tutor history should be handled by the API.')));
+
+  const adminResponse = createResponse();
+  await handleApiRequest({
+    isDemoSession: false,
+    method: 'GET',
+    path: '/chat/sessions',
+    query: {},
+    user: { id: 'admin-uid', role: 'admin' },
+  }, adminResponse, () => assert.fail('Admin access must not be added to tutor history.'));
+
+  assert.equal(facultyResponse.statusCode, 200);
+  assert.deepEqual(facultyResponse.body, []);
+  assert.equal(adminResponse.statusCode, 403);
 });
 
 test('administrator cannot create attendance sessions or edit attendance records', async () => {

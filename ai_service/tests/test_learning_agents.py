@@ -65,6 +65,11 @@ class FakeLearningRepository:
             data["courses"] = [course for course in data["courses"] if course["id"] == course_id]
         return data
 
+    async def get_faculty_course(self, course_id):
+        if course_id != "course-1":
+            raise ForbiddenError("The requested course is not assigned to this faculty account.")
+        return deepcopy(self.data["courses"][0])
+
     async def get_course_materials(self, course_id):
         if course_id != "course-1":
             raise ForbiddenError("The authenticated student is not enrolled in this course.")
@@ -331,6 +336,20 @@ async def test_knowledge_graph_only_emits_explicit_prerequisite_edges():
         "source": "explicit prerequisite field in enrolled course record",
     }]
     assert "missing-topic" not in str(graph["relationships"])
+
+
+@pytest.mark.asyncio
+async def test_faculty_knowledge_graph_uses_assigned_course_access():
+    graph = await KnowledgeGraphAgent(FakeLearningRepository("faculty-1")).build(
+        "course-1",
+        is_faculty=True,
+    )
+
+    assert graph["courseId"] == "course-1"
+    assert [concept["title"] for concept in graph["concepts"]] == [
+        "Programming Basics",
+        "Loops",
+    ]
 
 
 @pytest.mark.asyncio

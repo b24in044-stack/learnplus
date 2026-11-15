@@ -376,8 +376,9 @@ function requireAuth(req, res, next) {
 }
 
 function requireRole(role) {
+  const allowedRoles = Array.isArray(role) ? role : [role];
   return (req, res, next) => {
-    if (req.user.role !== role) {
+    if (!allowedRoles.includes(req.user.role)) {
       return res.status(403).json({ detail: 'You do not have permission to perform this action.' });
     }
     next();
@@ -1517,7 +1518,7 @@ app.get('/api/v1/courses/:courseId/learning-path', requireAuth, requireRole('stu
   res.json(list.length ? list : learningPath);
 }));
 
-app.get('/api/v1/chat/sessions', requireAuth, requireRole('student'), asyncRoute(async (req, res) => {
+app.get('/api/v1/chat/sessions', requireAuth, requireRole(['student', 'instructor']), asyncRoute(async (req, res) => {
   
   const sessionsForUser = chatSessions
     .filter((session) => session.ownerId === req.user.id)
@@ -1525,7 +1526,7 @@ app.get('/api/v1/chat/sessions', requireAuth, requireRole('student'), asyncRoute
   res.json(sessionsForUser);
 }));
 
-app.post('/api/v1/chat/sessions', requireAuth, requireRole('student'), asyncRoute(async (req, res) => {
+app.post('/api/v1/chat/sessions', requireAuth, requireRole(['student', 'instructor']), asyncRoute(async (req, res) => {
   const { title, courseId, courseCode } = req.body || {};
   
   if (courseId && !courseCatalog.some((course) => course.id === courseId)) {
@@ -1547,7 +1548,7 @@ app.post('/api/v1/chat/sessions', requireAuth, requireRole('student'), asyncRout
   return res.status(201).json(publicSession);
 }));
 
-app.get('/api/v1/chat/sessions/:sessionId/messages', requireAuth, requireRole('student'), asyncRoute(async (req, res) => {
+app.get('/api/v1/chat/sessions/:sessionId/messages', requireAuth, requireRole(['student', 'instructor']), asyncRoute(async (req, res) => {
   
   const { sessionId } = req.params;
   const session = chatSessions.find((item) => item.id === sessionId);
@@ -1558,7 +1559,7 @@ app.get('/api/v1/chat/sessions/:sessionId/messages', requireAuth, requireRole('s
   res.json(chatMessages[sessionId] || []);
 }));
 
-app.post('/api/v1/chat/sessions/:sessionId/messages', requireAuth, requireRole('student'), asyncRoute(async (req, res) => {
+app.post('/api/v1/chat/sessions/:sessionId/messages', requireAuth, requireRole(['student', 'instructor']), asyncRoute(async (req, res) => {
   const { content } = req.body || {};
 
   if (typeof content !== 'string' || !content.trim()) {

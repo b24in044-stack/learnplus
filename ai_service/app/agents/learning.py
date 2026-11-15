@@ -275,11 +275,15 @@ class KnowledgeGraphAgent:
     def __init__(self, repository: SupabaseLearningRepository) -> None:
         self._repository = repository
 
-    async def build(self, course_id: str) -> dict[str, Any]:
-        data = await self._repository.get_student_data(course_id)
-        if not data["courses"]:
-            raise ForbiddenError("The authenticated student is not enrolled in this course.")
-        course = data["courses"][0]
+    async def build(self, course_id: str, is_faculty: bool = False) -> dict[str, Any]:
+        if is_faculty:
+            course = await self._repository.get_faculty_course(course_id)
+        else:
+            data = await self._repository.get_student_data(course_id)
+            if not data["courses"]:
+                raise ForbiddenError("The authenticated student is not enrolled in this course.")
+            course = data["courses"][0]
+        course_source = "assigned course record" if is_faculty else "enrolled course record"
         topic_rows = course.get("topics")
         if not isinstance(topic_rows, list):
             topic_rows = course.get("units")
@@ -298,7 +302,7 @@ class KnowledgeGraphAgent:
                 concepts[identifier] = {
                     "id": identifier,
                     "title": title.strip()[:160],
-                    "source": "enrolled course record",
+                    "source": course_source,
                 }
                 raw_prerequisites.append((identifier, row.get("prerequisites", [])))
 
@@ -315,14 +319,14 @@ class KnowledgeGraphAgent:
                         "from": prerequisite_id,
                         "to": concept_id,
                         "relation": "prerequisite",
-                        "source": "explicit prerequisite field in enrolled course record",
+                        "source": f"explicit prerequisite field in {course_source}",
                     })
         return {
             "courseId": course_id,
             "courseTitle": course.get("title", ""),
             "concepts": list(concepts.values()),
             "relationships": edges,
-            "source": "enrolled course record",
+            "source": course_source,
             "limitations": [
                 "Only concepts and prerequisite relationships explicitly present in the course record are included.",
                 "No syllabus relationship is inferred when source data is absent.",

@@ -1134,6 +1134,7 @@ export async function handleApiRequest(req, res, next) {
   const assessmentGenerate = method === 'POST' && /^\/courses\/[^/]+\/assessments\/generate$/.test(path);
   try {
     if (studentOnly.test(path) && !assessmentRead && !assessmentCreate && !assessmentGenerate
+      && !(user.role === 'instructor' && /^\/chat\//.test(path))
       && user.role !== 'student') {
       throw fail(403, 'You do not have permission to access this resource.');
     }

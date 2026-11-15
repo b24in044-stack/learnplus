@@ -83,7 +83,7 @@ def _verify_and_load_profile(token: str, settings: Settings) -> tuple[str, str, 
 async def _authenticate_role(
     authorization: str | None = Header(default=None),
     settings: Settings | None = None,
-    required_role: str = "student",
+    required_role: str | tuple[str, ...] = "student",
 ) -> AuthenticatedUser:
     config = settings or get_settings()
     if not authorization or not authorization.startswith("Bearer "):
@@ -103,12 +103,14 @@ async def _authenticate_role(
         user_id, role, is_approved = authenticated_profile
     if not is_approved:
         raise ForbiddenError("This account is awaiting administrator approval.")
-    if role != required_role:
-        message = (
-            "The AI tutor is available to student accounts only."
-            if required_role == "student"
-            else "AI assessment generation is available to faculty accounts only."
-        )
+    required_roles = (required_role,) if isinstance(required_role, str) else required_role
+    if role not in required_roles:
+        if "student" in required_roles and "faculty" in required_roles:
+            message = "The AI tutor is available to student and faculty accounts only."
+        elif "student" in required_roles:
+            message = "The AI tutor is available to student accounts only."
+        else:
+            message = "AI assessment generation is available to faculty accounts only."
         raise ForbiddenError(message)
     return AuthenticatedUser(id=user_id, role=role, is_approved=is_approved)
 
@@ -125,3 +127,10 @@ async def authenticate_faculty_request(
     settings: Settings | None = None,
 ) -> AuthenticatedUser:
     return await _authenticate_role(authorization, settings, "faculty")
+
+
+async def authenticate_tutor_request(
+    authorization: str | None = Header(default=None),
+    settings: Settings | None = None,
+) -> AuthenticatedUser:
+    return await _authenticate_role(authorization, settings, ("student", "faculty"))

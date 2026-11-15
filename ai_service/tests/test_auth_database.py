@@ -29,6 +29,34 @@ async def test_auth_verifies_supabase_token_and_loads_server_role(monkeypatch):
             assert token == "access-token"
             return SimpleNamespace(user=SimpleNamespace(id=USER_ID))
 
+    @pytest.mark.asyncio
+    async def test_tutor_auth_accepts_students_and_faculty_but_not_admins(monkeypatch):
+        monkeypatch.setattr(
+            auth_module,
+            "_verify_and_load_profile",
+            lambda token, settings: (USER_ID, "faculty", True),
+        )
+        faculty = await auth_module.authenticate_tutor_request("tutor-token", configured_settings())
+        assert faculty.id == USER_ID
+        assert faculty.role == "faculty"
+
+        monkeypatch.setattr(
+            auth_module,
+            "_verify_and_load_profile",
+            lambda token, settings: (USER_ID, "student", True),
+        )
+        student = await auth_module.authenticate_tutor_request("tutor-token", configured_settings())
+        assert student.role == "student"
+
+        monkeypatch.setattr(
+            auth_module,
+            "_verify_and_load_profile",
+            lambda token, settings: (USER_ID, "admin", True),
+        )
+        with pytest.raises(ForbiddenError, match="student and faculty accounts only"):
+            await auth_module.authenticate_tutor_request("tutor-token", configured_settings())
+
+
     class FakeQuery:
         def select(self, fields):
             assert fields == "role,is_approved"

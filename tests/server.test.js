@@ -1536,7 +1536,8 @@ test('server health, demo policy, auth, authorization, and document deletion', a
   assert.equal(demoRoster.status, 503);
 
   const instructorSessions = await fetch(`${demoServer.baseUrl}/chat/sessions`, { headers: instructorHeaders });
-  assert.equal(instructorSessions.status, 403);
+  assert.equal(instructorSessions.status, 200);
+  assert.deepEqual(await instructorSessions.json(), []);
   const foreignConversation = await fetch(`${demoServer.baseUrl}/chat/sessions/session_01/messages`, {
     headers: instructorHeaders,
   });

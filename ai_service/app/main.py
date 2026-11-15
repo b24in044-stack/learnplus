@@ -11,7 +11,12 @@ from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query, Requ
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
-from ai_service.app.auth import AuthenticatedUser, authenticate_faculty_request, authenticate_request
+from ai_service.app.auth import (
+    AuthenticatedUser,
+    authenticate_faculty_request,
+    authenticate_request,
+    authenticate_tutor_request,
+)
 from ai_service.app.agents.learning import create_learning_agent_services
 from ai_service.app.agents.tutor import TutorContextLimitError
 from ai_service.app.config import Settings, get_settings
@@ -203,6 +208,13 @@ def create_app(
             raise ForbiddenError("AI assessment generation is available to faculty accounts only.")
         return authenticated
 
+    async def authenticate_tutor(authorization: str | None) -> AuthenticatedUser:
+        auth_dependency = application.state.auth_override or authenticate_tutor_request
+        authenticated = await auth_dependency(authorization, config)
+        if authenticated.role not in {"student", "faculty"}:
+            raise ForbiddenError("The AI tutor is available to student and faculty accounts only.")
+        return authenticated
+
     async def get_embeddings(request: Request):
         if not config.embedding_enabled:
             raise ServiceUnavailableError("Document embeddings are disabled on this service.")
@@ -276,7 +288,7 @@ def create_app(
         request: Request,
         authorization: str | None = Header(default=None),
     ):
-        authenticated = await authenticate(authorization)
+        authenticated = await authenticate_tutor(authorization)
         if not await limiter.allow(authenticated.id):
             raise HTTPException(status_code=429, detail="AI request limit reached. Please try again shortly.")
         if not config.provider_is_configured and not request.app.state.provider_override:
@@ -312,7 +324,10 @@ def create_app(
         if payload.course_id:
             graph_started = time.perf_counter()
             agents = create_learning_agents(authenticated.id, provider, authorization)
-            learning_context = await agents.knowledge_graph.build(payload.course_id)
+            learning_context = await agents.knowledge_graph.build(
+                payload.course_id,
+                is_faculty=authenticated.role == "faculty",
+            )
             knowledge_graph_duration_ms = max(
                 0,
                 round((time.perf_counter() - graph_started) * 1000),
@@ -527,7 +542,7 @@ def create_app(
         request: Request,
         authorization: str | None = Header(default=None),
     ):
-        authenticated = await authenticate(authorization)
+        authenticated = await authenticate_tutor(authorization)
         if not await limiter.allow(authenticated.id):
             raise HTTPException(status_code=429, detail="AI request limit reached. Please try again shortly.")
         rag_available = False
