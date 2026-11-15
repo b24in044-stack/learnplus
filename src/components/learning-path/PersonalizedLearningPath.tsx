@@ -19,6 +19,7 @@ import { Button } from '../ui/Button';
 import { EmptyState } from '../ui/EmptyState';
 import { LoadingSkeleton } from '../ui/LoadingSkeleton';
 import { ErrorState } from '../ui/ErrorState';
+import { LearningAgentWorkspace } from '../learning-agent/LearningAgentWorkspace';
 
 interface PersonalizedLearningPathProps {
   courses: Course[];
@@ -55,6 +56,7 @@ export const PersonalizedLearningPath: React.FC<PersonalizedLearningPathProps> =
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
+  const [showAssignmentInsights, setShowAssignmentInsights] = useState(false);
 
   const activeCourse = courses.find((c) => c.id === selectedCourseId) || courses[0];
 
@@ -138,6 +140,15 @@ export const PersonalizedLearningPath: React.FC<PersonalizedLearningPathProps> =
     };
   }, [selectedCourseId, loadAttempt]);
 
+  if (showAssignmentInsights) {
+    return (
+      <LearningAgentWorkspace
+        onNavigate={onNavigate}
+        onBackToPath={() => setShowAssignmentInsights(false)}
+      />
+    );
+  }
+
   const assignmentLearningSection = assignmentLearningPlan.length > 0 ? (
     <Card className="p-5">
       <h2 className="text-sm font-bold text-[#0F172A]">Recommendations from completed assignments</h2>
@@ -179,8 +190,12 @@ export const PersonalizedLearningPath: React.FC<PersonalizedLearningPathProps> =
           </p>
         </div>
 
-        {courses.length > 0 && (
-          <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-3">
+          <Button type="button" variant="outline" onClick={() => setShowAssignmentInsights(true)}>
+            <Sparkles className="mr-1 h-3.5 w-3.5" /> Assignment history & insights
+          </Button>
+          {courses.length > 0 && (
+            <div className="flex items-center gap-2">
             <span className="text-xs text-[#64748B]">Active Course:</span>
             <select
               value={selectedCourseId}
@@ -193,8 +208,9 @@ export const PersonalizedLearningPath: React.FC<PersonalizedLearningPathProps> =
                 </option>
               ))}
             </select>
-          </div>
-        )}
+            </div>
+          )}
+        </div>
       </div>
 
       {isLoading ? (

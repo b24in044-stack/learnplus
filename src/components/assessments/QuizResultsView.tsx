@@ -196,10 +196,10 @@ export const QuizResultsView: React.FC<QuizResultsViewProps> = ({
         </button>
 
         <button
-          onClick={() => onNavigate(result.aiGenerated ? 'learning-agent' : 'dashboard')}
+          onClick={() => onNavigate(result.aiGenerated ? 'learning-path' : 'dashboard')}
           className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#4338CA] hover:bg-[#3730A3] rounded-lg transition-colors shadow-xs"
         >
-          {result.aiGenerated ? 'Open Learning Agent' : 'Return to Overview'}
+          {result.aiGenerated ? 'Open Learning Path' : 'Return to Overview'}
           <ArrowRight className="w-3.5 h-3.5" />
         </button>
       </div>

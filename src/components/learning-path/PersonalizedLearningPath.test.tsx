@@ -126,4 +126,20 @@ describe('personalized learning path errors', () => {
       topicQuery: expect.stringContaining('Normalization'),
     }));
   });
+
+  it('opens completed assignment insights inside the Learning Path module', async () => {
+    vi.mocked(api.getLearningPath).mockResolvedValue([]);
+    vi.mocked(api.getLearningAssignmentHistory).mockResolvedValue(emptyHistory);
+    vi.mocked(api.getPersonalizedLearning).mockResolvedValue({
+      task_type: 'personalized_learning',
+      data: { recommendations: { recommendations: [] } },
+      agent_steps: [],
+    });
+
+    render(<PersonalizedLearningPath courses={courses} onNavigate={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: /Assignment history & insights/ }));
+
+    expect(await screen.findByText('COMPLETED ASSIGNMENTS')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Back to Learning Path/ })).toBeTruthy();
+  });
 });

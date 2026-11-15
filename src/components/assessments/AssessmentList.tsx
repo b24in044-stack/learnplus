@@ -11,18 +11,22 @@ import {
 } from 'lucide-react';
 import { Assessment, Course } from '../../types';
 import { api } from '../../services/api';
+import { NavTab } from '../layout/Sidebar';
+import { AssignmentGenerationWorkspace } from './AssignmentGenerationWorkspace';
 
 interface AssessmentListProps {
   courses: Course[];
   onStartQuiz: (assessment: Assessment) => void;
+  onNavigate: (tab: NavTab, params?: { topicQuery?: string; courseId?: string }) => void;
 }
 
-export const AssessmentList: React.FC<AssessmentListProps> = ({ courses, onStartQuiz }) => {
+export const AssessmentList: React.FC<AssessmentListProps> = ({ courses, onStartQuiz, onNavigate }) => {
   const [assessments, setAssessments] = useState<Assessment[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterCourse, setFilterCourse] = useState('all');
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
+  const [showAssignmentGenerator, setShowAssignmentGenerator] = useState(false);
 
   const loadAssessments = async () => {
     const list = await api.getAssessments();
@@ -43,6 +47,16 @@ export const AssessmentList: React.FC<AssessmentListProps> = ({ courses, onStart
     if (filterCourse !== 'all' && a.courseId !== filterCourse) return false;
     return true;
   });
+
+  if (showAssignmentGenerator) {
+    return (
+      <AssignmentGenerationWorkspace
+        courses={courses}
+        onNavigate={onNavigate}
+        onBack={() => setShowAssignmentGenerator(false)}
+      />
+    );
+  }
 
   const generatePractice = async () => {
     const course = courses.find((item) => item.id === filterCourse) || courses[0];
@@ -134,6 +148,14 @@ export const AssessmentList: React.FC<AssessmentListProps> = ({ courses, onStart
           >
             <Sparkles className="w-3.5 h-3.5" />
             {isGenerating ? 'Generating...' : 'Generate AI Practice'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowAssignmentGenerator(true)}
+            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-[#4338CA] bg-white hover:bg-indigo-50 border border-indigo-200 rounded-lg transition-colors"
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            Create my own assignment
           </button>
         </div>
       </div>

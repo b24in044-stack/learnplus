@@ -45,17 +45,18 @@ describe('role-specific File Storage navigation', () => {
     expect(screen.getByRole('button', { name: 'File Storage' })).toBeTruthy();
   });
 
-  it('shows both student agents as independent navigation items', () => {
+  it('keeps agent workflows inside their parent modules and leaves Logout visible', () => {
     renderSidebar('student');
 
-    expect(screen.getByText('AI AGENT NETWORK')).toBeTruthy();
-    const assignmentAgent = screen.getByRole('button', { name: 'Assignment Generation Agent' });
-    const learningAgent = screen.getByRole('button', { name: 'Learning Agent' });
-    expect(assignmentAgent).toBeTruthy();
-    expect(learningAgent).toBeTruthy();
-    fireEvent.click(assignmentAgent);
-    fireEvent.click(learningAgent);
-    expect(props.onSelectTab).toHaveBeenNthCalledWith(1, 'assignment-agent');
-    expect(props.onSelectTab).toHaveBeenNthCalledWith(2, 'learning-agent');
+    expect(screen.queryByText('AI AGENT NETWORK')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Assignment Generation Agent' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Learning Agent' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Assignment' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Learning Path' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Log Out' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Assignment' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Learning Path' }));
+    expect(props.onSelectTab).toHaveBeenNthCalledWith(1, 'assessments');
+    expect(props.onSelectTab).toHaveBeenNthCalledWith(2, 'learning-path');
   });
 });

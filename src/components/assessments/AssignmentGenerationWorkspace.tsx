@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ArrowRight, BookOpen, Sparkles } from 'lucide-react';
+import { ArrowLeft, ArrowRight, BookOpen, Sparkles } from 'lucide-react';
 import { Assessment, AssessmentResult, Course } from '../../types';
 import { api } from '../../services/api';
 import { Button } from '../ui/Button';
@@ -11,11 +11,13 @@ import { NavTab } from '../layout/Sidebar';
 interface AssignmentGenerationWorkspaceProps {
   courses: Course[];
   onNavigate: (tab: NavTab, params?: { topicQuery?: string }) => void;
+  onBack: () => void;
 }
 
 export const AssignmentGenerationWorkspace: React.FC<AssignmentGenerationWorkspaceProps> = ({
   courses,
   onNavigate,
+  onBack,
 }) => {
   const [courseId, setCourseId] = useState(courses[0]?.id || '');
   const [selectedTopics, setSelectedTopics] = useState<string[]>([]);
@@ -95,6 +97,9 @@ export const AssignmentGenerationWorkspace: React.FC<AssignmentGenerationWorkspa
   if (!courses.length) {
     return (
       <div className="p-6 md:p-8 max-w-5xl mx-auto">
+        <button type="button" onClick={onBack} className="mb-5 inline-flex items-center gap-2 text-sm font-semibold text-[#4338CA]">
+          <ArrowLeft size={16} aria-hidden="true" /> Back to Assignments
+        </button>
         <EmptyState
           icon={<BookOpen className="w-5 h-5" />}
           title="No enrolled subjects"
@@ -106,14 +111,19 @@ export const AssignmentGenerationWorkspace: React.FC<AssignmentGenerationWorkspa
 
   if (activeAssessment && result) {
     return (
-      <QuizResultsView
-        result={result}
-        onRetake={() => {
-          setActiveAssessment(null);
-          setResult(null);
-        }}
-        onNavigate={onNavigate}
-      />
+      <div>
+        <button type="button" onClick={onBack} className="mx-auto mt-5 flex items-center gap-2 text-sm font-semibold text-[#4338CA]">
+          <ArrowLeft size={16} aria-hidden="true" /> Back to Assignments
+        </button>
+        <QuizResultsView
+          result={result}
+          onRetake={() => {
+            setActiveAssessment(null);
+            setResult(null);
+          }}
+          onNavigate={onNavigate}
+        />
+      </div>
     );
   }
 
@@ -129,14 +139,17 @@ export const AssignmentGenerationWorkspace: React.FC<AssignmentGenerationWorkspa
 
   return (
     <div className="p-4 md:p-8 max-w-5xl mx-auto space-y-6">
+      <button type="button" onClick={onBack} className="inline-flex items-center gap-2 text-sm font-semibold text-[#4338CA]">
+        <ArrowLeft size={16} aria-hidden="true" /> Back to Assignments
+      </button>
       <header className="rounded-2xl bg-gradient-to-br from-indigo-700 to-violet-700 p-6 text-white md:p-8">
         <div className="flex items-start gap-3">
           <Sparkles className="mt-1 h-5 w-5 shrink-0" aria-hidden="true" />
           <div>
-            <p className="text-[11px] font-bold tracking-[0.16em] text-indigo-100">AI AGENT NETWORK</p>
-            <h1 className="mt-1 text-xl font-bold">Assignment Generation Agent</h1>
+            <p className="text-[11px] font-bold tracking-[0.16em] text-indigo-100">ASSIGNMENTS</p>
+            <h1 className="mt-1 text-xl font-bold">Create my own practice assignment</h1>
             <p className="mt-2 max-w-2xl text-sm text-indigo-100">
-              Generate a subject-focused practice assignment with Groq. Your answers are graded and saved by the backend.
+              Choose an enrolled subject and topics, then generate a personal practice assignment. Your answers are graded and saved by the backend.
             </p>
           </div>
         </div>

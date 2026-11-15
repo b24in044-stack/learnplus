@@ -21,7 +21,6 @@ import {
   AnalyticsData,
   Course,
   Recommendation,
-  LearningAssignmentHistory,
   StudyPlannerTask,
   WeakTopic,
 } from '../../types';
@@ -62,8 +61,6 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ onNavigate }
   const [courses, setCourses] = useState<Course[]>([]);
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
-  const [assignmentHistory, setAssignmentHistory] = useState<LearningAssignmentHistory | null>(null);
-  const [assignmentHistoryError, setAssignmentHistoryError] = useState<string | null>(null);
   const [tasks, setTasks] = useState<StudyPlannerTask[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -90,13 +87,6 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ onNavigate }
       setCourses(courseData);
       setAnalytics(analyticsData);
       setRecommendations(recommendationData);
-      try {
-        setAssignmentHistory(await api.getLearningAssignmentHistory());
-        setAssignmentHistoryError(null);
-      } catch (historyError) {
-        setAssignmentHistory(null);
-        setAssignmentHistoryError(historyError instanceof Error ? historyError.message : 'Assignment results could not be loaded.');
-      }
       try {
         setTasks(await api.getStudyTasks());
       } catch (taskLoadError) {
@@ -505,27 +495,6 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ onNavigate }
         <button type="button" className="learning-path-card" onClick={() => onNavigate('learning-path')}>
           <span className="learning-path-icon"><GraduationCap size={20} aria-hidden="true" /></span>
           <span><strong>Keep your momentum</strong><small>Explore your personalized learning path</small></span>
-          <ArrowRight size={16} aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          onClick={() => onNavigate('learning-agent')}
-          className="flex items-center justify-between gap-4 rounded-xl border border-indigo-100 bg-indigo-50 p-4 text-left"
-        >
-          <span>
-            <strong className="block text-sm text-[#0F172A]">Learning Agent</strong>
-            <small className="mt-1 block text-xs text-[#64748B]">
-              {assignmentHistory
-                ? `${assignmentHistory.overview.totalAssignmentsCompleted} completed · ${
-                  assignmentHistory.overview.overallAccuracy === null
-                    ? 'accuracy not yet measured'
-                    : `${assignmentHistory.overview.overallAccuracy}% overall accuracy`
-                }`
-                : assignmentHistoryError
-                  ? `Assignment history unavailable: ${assignmentHistoryError}`
-                  : 'Loading completed assignment results…'}
-            </small>
-          </span>
           <ArrowRight size={16} aria-hidden="true" />
         </button>
       </aside>

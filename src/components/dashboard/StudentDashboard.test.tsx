@@ -127,6 +127,7 @@ describe('student dashboard', () => {
     expect(within(summary).getByText('1.5')).toBeTruthy();
     expect(within(summary).getByText('—')).toBeTruthy();
     expect(screen.getByText('Jordan Lee')).toBeTruthy();
+    expect(api.getLearningAssignmentHistory).not.toHaveBeenCalled();
   });
 
   it('persists task checkbox changes through the planner API', async () => {

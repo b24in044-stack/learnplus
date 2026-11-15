@@ -24,6 +24,7 @@ export type NavTab =
   | 'tutor'
   | 'materials'
   | 'assessments'
+  // Retained for old links; these tabs redirect to their parent modules.
   | 'assignment-agent'
   | 'learning-agent'
   | 'analytics'
@@ -122,34 +123,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </button>
           );
         })}
-        {role === 'student' && (
-          <>
-            {!isCollapsed && (
-              <p className="px-3 pt-4 pb-1 text-[10px] font-bold tracking-[0.12em] text-[#94A3B8]">
-                AI AGENT NETWORK
-              </p>
-            )}
-            {[
-              { id: 'assignment-agent' as NavTab, label: 'Assignment Generation Agent', icon: Sparkles },
-              { id: 'learning-agent' as NavTab, label: 'Learning Agent', icon: BarChart3 },
-            ].map(({ id, label, icon: Icon }) => {
-              const active = currentTab === id;
-              return (
-                <button
-                  type="button"
-                  key={id}
-                  onClick={() => onSelectTab(id)}
-                  className={`sidebar-link ${active ? 'is-active' : ''}`}
-                  title={isCollapsed ? label : undefined}
-                  aria-current={active ? 'page' : undefined}
-                >
-                  <Icon size={16} aria-hidden="true" />
-                  {!isCollapsed && <span>{label}</span>}
-                </button>
-              );
-            })}
-          </>
-        )}
         <button
           type="button"
           onClick={onOpenNotifications}

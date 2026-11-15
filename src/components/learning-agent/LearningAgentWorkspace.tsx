@@ -13,6 +13,7 @@ import { NavTab } from '../layout/Sidebar';
 
 interface LearningAgentWorkspaceProps {
   onNavigate: (tab: NavTab, params?: { topicQuery?: string }) => void;
+  onBackToPath?: () => void;
 }
 
 const formatDate = (value: string) => {
@@ -25,7 +26,7 @@ const evidenceLabel = (topic: LearningTopicPerformance) =>
     ? `${topic.estimatedMastery}% estimated mastery`
     : 'Insufficient assessment evidence';
 
-export const LearningAgentWorkspace: React.FC<LearningAgentWorkspaceProps> = ({ onNavigate }) => {
+export const LearningAgentWorkspace: React.FC<LearningAgentWorkspaceProps> = ({ onNavigate, onBackToPath }) => {
   const [history, setHistory] = useState<LearningAssignmentHistory | null>(null);
   const [selected, setSelected] = useState<LearningAssignmentDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -78,17 +79,24 @@ export const LearningAgentWorkspace: React.FC<LearningAgentWorkspaceProps> = ({ 
     }
   };
 
+  const backToPathButton = onBackToPath ? (
+    <Button type="button" variant="outline" onClick={onBackToPath}>
+      <ArrowLeft className="mr-1 h-3.5 w-3.5" /> Back to Learning Path
+    </Button>
+  ) : null;
+
   if (isLoading) {
-    return <div className="p-8 text-center text-sm text-[#64748B]" role="status">Loading completed assignments…</div>;
+    return <div className="mx-auto max-w-6xl space-y-4 p-4 md:p-8">{backToPathButton}<div className="p-8 text-center text-sm text-[#64748B]" role="status">Loading completed assignments…</div></div>;
   }
   if (error || !history) {
-    return <ErrorState message={error || 'Learning Agent history is unavailable.'} onRetry={() => void loadHistory()} className="mt-12" />;
+    return <div className="mx-auto max-w-6xl space-y-4 p-4 md:p-8">{backToPathButton}<ErrorState message={error || 'Learning Agent history is unavailable.'} onRetry={() => void loadHistory()} className="mt-4" /></div>;
   }
 
   if (selected) {
     const details = selected.details;
     return (
       <div className="p-4 md:p-8 max-w-6xl mx-auto space-y-6">
+        {backToPathButton}
         <button
           type="button"
           onClick={() => {
@@ -97,7 +105,7 @@ export const LearningAgentWorkspace: React.FC<LearningAgentWorkspaceProps> = ({ 
           }}
           className="inline-flex items-center gap-2 text-sm font-semibold text-[#4338CA]"
         >
-          <ArrowLeft size={16} aria-hidden="true" /> Back to Learning Agent
+          <ArrowLeft size={16} aria-hidden="true" /> Back to Assignment History
         </button>
         <header className="rounded-2xl bg-white border border-[#E2E8F0] p-6 shadow-xs">
           <p className="text-[11px] font-bold tracking-[0.14em] text-[#64748B]">INDIVIDUAL ASSIGNMENT ANALYSIS</p>
@@ -192,12 +200,13 @@ export const LearningAgentWorkspace: React.FC<LearningAgentWorkspaceProps> = ({ 
   const overview = history.overview;
   return (
     <div className="p-4 md:p-8 max-w-6xl mx-auto space-y-6">
-      <header className="rounded-2xl bg-gradient-to-br from-slate-900 to-indigo-950 p-6 text-white md:p-8">
+    {backToPathButton}
+    <header className="rounded-2xl bg-gradient-to-br from-slate-900 to-indigo-950 p-6 text-white md:p-8">
         <div className="flex items-start gap-3">
           <Sparkles className="mt-1 h-5 w-5 shrink-0 text-indigo-300" aria-hidden="true" />
           <div>
-            <p className="text-[11px] font-bold tracking-[0.16em] text-indigo-200">AI AGENT NETWORK</p>
-            <h1 className="mt-1 text-xl font-bold">Learning Agent</h1>
+            <p className="text-[11px] font-bold tracking-[0.16em] text-indigo-200">LEARNING PATH</p>
+            <h1 className="mt-1 text-xl font-bold">Assignment history and learning insights</h1>
             <p className="mt-2 max-w-3xl text-sm text-slate-300">
               Learning intelligence is based only on assignments that were fully answered, backend graded, and published.
             </p>
@@ -337,7 +346,7 @@ export const LearningAgentWorkspace: React.FC<LearningAgentWorkspaceProps> = ({ 
             title="No completed assignments yet"
             description="Assignments appear here only after submission, backend grading, and result publication."
             actionLabel="Generate an assignment"
-            onAction={() => onNavigate('assignment-agent')}
+            onAction={() => onNavigate('assessments')}
           />
         )}
         {isLoadingDetail && <p className="text-xs text-[#64748B]" role="status">Loading assignment analysis…</p>}

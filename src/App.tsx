@@ -28,8 +28,6 @@ const StudyMaterials = lazy(() => import('./components/materials/StudyMaterials'
 const AssessmentList = lazy(() => import('./components/assessments/AssessmentList').then(({ AssessmentList: component }) => ({ default: component })));
 const QuizRunner = lazy(() => import('./components/assessments/QuizRunner').then(({ QuizRunner: component }) => ({ default: component })));
 const QuizResultsView = lazy(() => import('./components/assessments/QuizResultsView').then(({ QuizResultsView: component }) => ({ default: component })));
-const AssignmentGenerationWorkspace = lazy(() => import('./components/assessments/AssignmentGenerationWorkspace').then(({ AssignmentGenerationWorkspace: component }) => ({ default: component })));
-const LearningAgentWorkspace = lazy(() => import('./components/learning-agent/LearningAgentWorkspace').then(({ LearningAgentWorkspace: component }) => ({ default: component })));
 const LearningAnalytics = lazy(() => import('./components/analytics/LearningAnalytics').then(({ LearningAnalytics: component }) => ({ default: component })));
 const PersonalizedLearningPath = lazy(() => import('./components/learning-path/PersonalizedLearningPath').then(({ PersonalizedLearningPath: component }) => ({ default: component })));
 const InstructorWorkspace = lazy(() => import('./components/instructor/InstructorWorkspace').then(({ InstructorWorkspace: component }) => ({ default: component })));
@@ -201,8 +199,6 @@ function MainApp() {
         'tutor',
         'materials',
         'assessments',
-        'assignment-agent',
-        'learning-agent',
         'analytics',
         'learning-path',
         'planner',
@@ -213,6 +209,17 @@ function MainApp() {
         'admin',
         'settings'
       ];
+
+      if (hash === 'assignment-agent' || hash === 'learning-agent') {
+        const destinationTab = hash === 'assignment-agent' ? 'assessments' : 'learning-path';
+        setCurrentTab(destinationTab);
+        window.history.replaceState(
+          null,
+          document.title,
+          `${window.location.pathname}${window.location.search}#${destinationTab}`
+        );
+        return;
+      }
 
       if (validTabs.includes(hash as NavTab)) {
         setCurrentTab(hash as NavTab);
@@ -229,7 +236,12 @@ function MainApp() {
     tab: NavTab,
     params?: { courseId?: string; assessmentId?: string; topicQuery?: string }
   ) => {
-    if (tab === 'materials' && role !== 'instructor') return;
+    const destinationTab: NavTab = tab === 'assignment-agent'
+      ? 'assessments'
+      : tab === 'learning-agent'
+        ? 'learning-path'
+        : tab;
+    if (destinationTab === 'materials' && role !== 'instructor') return;
     if (['assignment-agent', 'learning-agent'].includes(tab) && role !== 'student') return;
     if (params?.courseId) {
       setSelectedCourseId(params.courseId);
@@ -249,13 +261,13 @@ function MainApp() {
     }
 
     // Reset quiz active states when navigating elsewhere
-    if (tab !== 'assessments') {
+    if (destinationTab !== 'assessments') {
       setActiveQuiz(null);
       setQuizResult(null);
     }
 
-    setCurrentTab(tab);
-    window.location.hash = tab;
+    setCurrentTab(destinationTab);
+    window.location.hash = destinationTab;
     setIsMobileMenuOpen(false);
   };
 
@@ -300,10 +312,6 @@ function MainApp() {
         return 'Study Materials';
       case 'assessments':
         return activeQuiz ? 'Assessment in Progress' : quizResult ? 'Assessment Results' : 'Assessments & Quizzes';
-      case 'assignment-agent':
-        return 'Assignment Generation Agent';
-      case 'learning-agent':
-        return 'Learning Agent';
       case 'analytics':
         return 'Learning Analytics';
       case 'learning-path':
@@ -493,6 +501,7 @@ function MainApp() {
               ) : (
                 <AssessmentList
                   courses={courses}
+                  onNavigate={(tab, params) => handleNavigate(tab, params)}
                   onStartQuiz={(asmt) => {
                     setQuizResult(null);
                     setActiveQuiz(asmt);
@@ -501,19 +510,6 @@ function MainApp() {
               )}
               </>
             )
-          )}
-
-          {currentTab === 'assignment-agent' && role === 'student' && (
-            <AssignmentGenerationWorkspace
-              courses={courses}
-              onNavigate={(tab, params) => handleNavigate(tab, params)}
-            />
-          )}
-
-          {currentTab === 'learning-agent' && role === 'student' && (
-            <LearningAgentWorkspace
-              onNavigate={(tab, params) => handleNavigate(tab, params)}
-            />
           )}
 
           {currentTab === 'analytics' && (

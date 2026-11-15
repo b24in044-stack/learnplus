@@ -35,7 +35,8 @@ interface InstructorWorkspaceProps {
 export const InstructorWorkspace: React.FC<InstructorWorkspaceProps> = ({ courses }) => {
   const { role, user } = useAuth();
   const [activeCourseId, setActiveCourseId] = useState(courses[0]?.id || '');
-  const [activeTab, setActiveTab] = useState<'roster' | 'generator' | 'curriculum' | 'telemetry'>('roster');
+  const [activeTab, setActiveTab] = useState<'roster' | 'assignments' | 'curriculum' | 'telemetry'>('roster');
+  const [assignmentMode, setAssignmentMode] = useState<'manual' | 'ai'>('manual');
   const [roster, setRoster] = useState<Awaited<ReturnType<typeof api.getFacultyCourseRoster>>>([]);
   const [isRosterLoading, setIsRosterLoading] = useState(false);
   const [rosterError, setRosterError] = useState<string | null>(null);
@@ -59,6 +60,9 @@ export const InstructorWorkspace: React.FC<InstructorWorkspaceProps> = ({ course
   const [announcementContent, setAnnouncementContent] = useState('');
   const [assignmentTitle, setAssignmentTitle] = useState('');
   const [assignmentDescription, setAssignmentDescription] = useState('');
+  const [assignmentDueAt, setAssignmentDueAt] = useState('');
+  const [assignmentMaxPoints, setAssignmentMaxPoints] = useState(100);
+  const [assignmentPublished, setAssignmentPublished] = useState(false);
   const [rosterQuery, setRosterQuery] = useState('');
   const [rosterFilter, setRosterFilter] = useState<'all' | 'support' | 'no-score'>('all');
   const [rosterSort, setRosterSort] = useState<'name' | 'score' | 'activity'>('name');
@@ -117,14 +121,24 @@ export const InstructorWorkspace: React.FC<InstructorWorkspaceProps> = ({ course
   const createFacultyResource = async (resource: 'announcements' | 'assignments') => {
     if (!activeCourseId) return;
     setFacultyActionError(null);
+    setAssignmentPublished(false);
     try {
       await api.createCourseAcademicResource(activeCourseId, resource, resource === 'announcements'
         ? { title: announcementTitle, content: announcementContent, status: 'published' }
-        : { title: assignmentTitle, description: assignmentDescription, status: 'published' });
+        : {
+          title: assignmentTitle,
+          description: assignmentDescription,
+          dueAt: assignmentDueAt ? new Date(assignmentDueAt).toISOString() : null,
+          maxPoints: assignmentMaxPoints,
+          status: 'published',
+        });
       setAnnouncementTitle('');
       setAnnouncementContent('');
       setAssignmentTitle('');
       setAssignmentDescription('');
+      setAssignmentDueAt('');
+      setAssignmentMaxPoints(100);
+      if (resource === 'assignments') setAssignmentPublished(true);
       setFoundation(await api.getCourseAcademicFoundation(activeCourseId));
     } catch (error) {
       setFacultyActionError(error instanceof Error ? error.message : 'Academic resource could not be saved.');
@@ -311,15 +325,15 @@ export const InstructorWorkspace: React.FC<InstructorWorkspaceProps> = ({ course
         </button>
 
         <button
-          onClick={() => setActiveTab('generator')}
+          onClick={() => setActiveTab('assignments')}
           className={`pb-3 cursor-pointer transition-colors flex items-center gap-1.5 ${
-            activeTab === 'generator'
+            activeTab === 'assignments'
               ? 'border-b-2 border-[#4338CA] text-[#4338CA]'
               : 'hover:text-[#0F172A]'
           }`}
         >
-          <Sparkles className="w-3.5 h-3.5 text-[#4338CA]" />
-          <span>AI Assessment Generator</span>
+          <FileCheck className="w-3.5 h-3.5 text-[#4338CA]" />
+          <span>Assignments</span>
         </button>
 
         <button
@@ -442,8 +456,123 @@ export const InstructorWorkspace: React.FC<InstructorWorkspaceProps> = ({ course
         </Card>
       )}
 
-      {/* TAB 2: AI ASSESSMENT GENERATOR */}
-      {activeTab === 'generator' && (
+      {/* TAB 2: COURSE ASSIGNMENTS */}
+      {activeTab === 'assignments' && (
+        <div className="space-y-5">
+          <Card className="space-y-4 p-5">
+            <div>
+              <h2 className="text-sm font-semibold text-[#0F172A]">Assignments · {activeCourse.code}</h2>
+              <p className="mt-1 text-xs text-[#64748B]">
+                Publish a written assignment or generate an AI assessment for students enrolled in this course.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2" role="group" aria-label="Assignment creation method">
+              <Button
+                type="button"
+                variant={assignmentMode === 'manual' ? 'primary' : 'outline'}
+                onClick={() => setAssignmentMode('manual')}
+              >
+                Manual assignment
+              </Button>
+              <Button
+                type="button"
+                variant={assignmentMode === 'ai' ? 'primary' : 'outline'}
+                onClick={() => setAssignmentMode('ai')}
+                icon={<Sparkles className="h-3.5 w-3.5" />}
+              >
+                AI assessment generator
+              </Button>
+            </div>
+          </Card>
+
+          {assignmentMode === 'manual' ? (
+            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+              <Card className="space-y-4 p-6">
+                <div>
+                  <h3 className="text-sm font-semibold text-[#0F172A]">Create manual assignment</h3>
+                  <p className="mt-1 text-xs text-[#64748B]">Add instructions, deadline and maximum points before publishing.</p>
+                </div>
+                <label className="block space-y-1">
+                  <span className="text-xs font-semibold text-[#0F172A]">Assignment title</span>
+                  <input
+                    value={assignmentTitle}
+                    onChange={(event) => setAssignmentTitle(event.target.value)}
+                    maxLength={200}
+                    required
+                    placeholder="Assignment title"
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs"
+                  />
+                </label>
+                <label className="block space-y-1">
+                  <span className="text-xs font-semibold text-[#0F172A]">Instructions</span>
+                  <textarea
+                    value={assignmentDescription}
+                    onChange={(event) => setAssignmentDescription(event.target.value)}
+                    maxLength={10000}
+                    placeholder="Instructions and requirements"
+                    rows={5}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs"
+                  />
+                </label>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="block space-y-1">
+                    <span className="text-xs font-semibold text-[#0F172A]">Due date (optional)</span>
+                    <input
+                      type="datetime-local"
+                      value={assignmentDueAt}
+                      onChange={(event) => setAssignmentDueAt(event.target.value)}
+                      className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs"
+                    />
+                  </label>
+                  <label className="block space-y-1">
+                    <span className="text-xs font-semibold text-[#0F172A]">Maximum points</span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={assignmentMaxPoints}
+                      onChange={(event) => setAssignmentMaxPoints(Number(event.target.value))}
+                      className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs"
+                    />
+                  </label>
+                </div>
+                <Button
+                  type="button"
+                  variant="primary"
+                  onClick={() => void createFacultyResource('assignments')}
+                  disabled={!assignmentTitle.trim() || assignmentMaxPoints < 1}
+                  icon={<Upload className="h-3.5 w-3.5" />}
+                >
+                  Publish assignment to class
+                </Button>
+                {assignmentPublished && (
+                  <p className="flex items-center gap-2 rounded-lg border border-green-200 bg-green-50 p-3 text-xs text-green-800" role="status">
+                    <CheckCircle className="h-4 w-4" aria-hidden="true" />
+                    Assignment published for enrolled students.
+                  </p>
+                )}
+              </Card>
+
+              <Card className="space-y-3 p-6">
+                <h3 className="text-sm font-semibold text-[#0F172A]">Published assignments</h3>
+                {foundation?.assignments.length ? (
+                  <ul className="divide-y divide-slate-100">
+                    {foundation.assignments.map((assignment) => (
+                      <li key={assignment.id} className="py-3 first:pt-0 last:pb-0">
+                        <p className="text-xs font-semibold text-[#0F172A]">{assignment.title}</p>
+                        <p className="mt-1 whitespace-pre-wrap text-xs text-[#64748B]">{assignment.description || 'No additional instructions.'}</p>
+                        <p className="mt-1 text-[11px] text-[#64748B]">
+                          {assignment.status} · {assignment.max_points} points
+                          {assignment.due_at ? ` · Due ${new Date(assignment.due_at).toLocaleString()}` : ' · No deadline'}
+                        </p>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-xs text-[#64748B]">No assignments have been published for this course yet.</p>
+                )}
+              </Card>
+            </div>
+          ) : (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           {/* Form Side (5 cols) */}
           <div className="lg:col-span-5 space-y-4">
@@ -656,6 +785,8 @@ export const InstructorWorkspace: React.FC<InstructorWorkspaceProps> = ({ course
             )}
           </div>
         </div>
+          )}
+        </div>
       )}
 
       {/* TAB 3: CURRICULUM & SYLLABUS VECTOR STORE */}
@@ -706,14 +837,7 @@ export const InstructorWorkspace: React.FC<InstructorWorkspaceProps> = ({ course
               <textarea value={announcementContent} onChange={(event) => setAnnouncementContent(event.target.value)} placeholder="Message for enrolled students" rows={3} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs" />
               <Button type="button" variant="primary" onClick={() => void createFacultyResource('announcements')} disabled={!announcementTitle.trim() || !announcementContent.trim()}>Publish announcement</Button>
             </div>
-            <div className="space-y-2">
-              <h3 className="text-xs font-semibold text-[#0F172A]">Create assignment</h3>
-              <input value={assignmentTitle} onChange={(event) => setAssignmentTitle(event.target.value)} placeholder="Assignment title" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs" />
-              <textarea value={assignmentDescription} onChange={(event) => setAssignmentDescription(event.target.value)} placeholder="Instructions and requirements" rows={3} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs" />
-              <Button type="button" variant="primary" onClick={() => void createFacultyResource('assignments')} disabled={!assignmentTitle.trim()}>Publish assignment</Button>
-            </div>
           </div>
-          {foundation?.assignments.length ? <p className="text-xs text-[#64748B]">{foundation.assignments.length} assignment(s) published for this course.</p> : null}
         </Card>
       )}
 
