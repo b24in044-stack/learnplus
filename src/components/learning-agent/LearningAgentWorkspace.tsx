@@ -205,8 +205,8 @@ export const LearningAgentWorkspace: React.FC<LearningAgentWorkspaceProps> = ({ 
         <div className="flex items-start gap-3">
           <Sparkles className="mt-1 h-5 w-5 shrink-0 text-indigo-300" aria-hidden="true" />
           <div>
-            <p className="text-[11px] font-bold tracking-[0.16em] text-indigo-200">LEARNING PATH</p>
-            <h1 className="mt-1 text-xl font-bold">Assignment history and learning insights</h1>
+            <p className="text-[11px] font-bold tracking-[0.16em] text-indigo-200">AI AGENT NETWORK</p>
+            <h1 className="mt-1 text-xl font-bold">Learning Agent</h1>
             <p className="mt-2 max-w-3xl text-sm text-slate-300">
               Learning intelligence is based only on assignments that were fully answered, backend graded, and published.
             </p>
@@ -291,6 +291,46 @@ export const LearningAgentWorkspace: React.FC<LearningAgentWorkspaceProps> = ({ 
         </div>
       </section>
 
+      <section className="grid gap-4 md:grid-cols-2" aria-label="Overall topic strengths and improvement areas">
+        <div className="rounded-xl border border-[#E2E8F0] bg-white p-5">
+          <h2 className="text-sm font-bold text-[#0F172A]">Topics answered correctly most often</h2>
+          {overview.strengths.length ? (
+            <ul className="mt-3 space-y-2">
+              {overview.strengths.map((topic) => (
+                <li key={`${topic.courseId || 'course'}-${topic.topic}`} className="flex items-center justify-between gap-3 text-xs">
+                  <span className="font-semibold text-[#334155]">{topic.topic}{topic.courseCode ? ` · ${topic.courseCode}` : ''}</span>
+                  <span className="text-[#64748B]">{topic.correct}/{topic.attempts} correct · {topic.accuracy}%</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-2 text-xs text-[#64748B]">There is not yet enough evidence to identify a measured strength.</p>
+          )}
+        </div>
+        <div className="rounded-xl border border-[#E2E8F0] bg-white p-5">
+          <h2 className="text-sm font-bold text-[#0F172A]">Topics requiring improvement</h2>
+          {overview.topicsRequiringImprovement.length ? (
+            <ul className="mt-3 space-y-2">
+              {overview.topicsRequiringImprovement.map((topic) => (
+                <li key={`${topic.courseId || 'course'}-${topic.topic}`} className="flex items-center justify-between gap-3 text-xs">
+                  <span className="font-semibold text-[#334155]">{topic.topic}{topic.courseCode ? ` · ${topic.courseCode}` : ''}</span>
+                  <span className="text-[#64748B]">
+                    {topic.correct}/{topic.attempts} correct · {topic.evidenceStatus === 'MEASURED' ? `${topic.accuracy}% accuracy` : 'insufficient evidence'}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-2 text-xs text-[#64748B]">No current revision areas are identified by completed assignment evidence.</p>
+          )}
+          {overview.repeatedIncorrectTopics.length > 0 && (
+            <p className="mt-3 text-xs text-amber-800">
+              Repeated incorrect answers: {overview.repeatedIncorrectTopics.map((topic) => topic.topic).join(', ')}.
+            </p>
+          )}
+        </div>
+      </section>
+
       <section className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -346,7 +386,7 @@ export const LearningAgentWorkspace: React.FC<LearningAgentWorkspaceProps> = ({ 
             title="No completed assignments yet"
             description="Assignments appear here only after submission, backend grading, and result publication."
             actionLabel="Generate an assignment"
-            onAction={() => onNavigate('assessments')}
+            onAction={() => onNavigate('assignment-agent')}
           />
         )}
         {isLoadingDetail && <p className="text-xs text-[#64748B]" role="status">Loading assignment analysis…</p>}

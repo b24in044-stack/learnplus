@@ -52,9 +52,33 @@ const history: LearningAssignmentHistory = {
       repeatedIncorrectAnswers: 0,
       improvementAcrossAssignments: null,
     }],
-    topicsRequiringImprovement: [],
+    topicsRequiringImprovement: [{
+      topic: 'Indexing',
+      courseId: 'course-1',
+      courseCode: 'DBMS',
+      attempts: 2,
+      correct: 0,
+      accuracy: 0,
+      estimatedMastery: null,
+      evidenceStatus: 'INSUFFICIENT_EVIDENCE',
+      assignmentCount: 1,
+      repeatedIncorrectAnswers: 2,
+      improvementAcrossAssignments: null,
+    }],
     strengths: [],
-    repeatedIncorrectTopics: [],
+    repeatedIncorrectTopics: [{
+      topic: 'Indexing',
+      courseId: 'course-1',
+      courseCode: 'DBMS',
+      attempts: 2,
+      correct: 0,
+      accuracy: 0,
+      estimatedMastery: null,
+      evidenceStatus: 'INSUFFICIENT_EVIDENCE',
+      assignmentCount: 1,
+      repeatedIncorrectAnswers: 2,
+      improvementAcrossAssignments: null,
+    }],
     difficultyPerformance: [{ difficulty: 'Intermediate', attempted: 1, correct: 1, accuracy: 100 }],
     personalizedLearningPlan: [],
     evidenceNote: 'Mastery estimates require three questions.',
@@ -103,6 +127,9 @@ describe('Learning Agent workspace', () => {
     expect(await screen.findByText('COMPLETED ASSIGNMENTS')).toBeTruthy();
     expect(screen.getByText('Assignments completed')).toBeTruthy();
     expect(screen.getByText('Assignment 1 — Database Management Systems')).toBeTruthy();
+    expect(screen.getByText('Topics requiring improvement')).toBeTruthy();
+    expect(screen.getByText('Indexing · DBMS')).toBeTruthy();
+    expect(screen.getByText(/Repeated incorrect answers: Indexing/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /Assignment 1 — Database Management Systems/ }));
 
     expect(await screen.findByText('INDIVIDUAL ASSIGNMENT ANALYSIS')).toBeTruthy();

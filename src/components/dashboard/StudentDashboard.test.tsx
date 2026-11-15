@@ -127,7 +127,37 @@ describe('student dashboard', () => {
     expect(within(summary).getByText('1.5')).toBeTruthy();
     expect(within(summary).getByText('—')).toBeTruthy();
     expect(screen.getByText('Jordan Lee')).toBeTruthy();
-    expect(api.getLearningAssignmentHistory).not.toHaveBeenCalled();
+    expect(await screen.findByText('0 completed · accuracy not yet measured')).toBeTruthy();
+    expect(api.getLearningAssignmentHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it('navigates from the dashboard to the real completed-assignment workspace', async () => {
+    const onNavigate = vi.fn();
+    render(<StudentDashboard onNavigate={onNavigate} />);
+    fireEvent.click(await screen.findByRole('button', { name: /Learning Agent/ }));
+    expect(onNavigate).toHaveBeenCalledWith('learning-agent');
+  });
+
+  it('shows completed assignment totals from the student learning history', async () => {
+    vi.mocked(api.getLearningAssignmentHistory).mockResolvedValue({
+      ...assignmentHistory,
+      overview: {
+        ...assignmentHistory.overview,
+        totalAssignmentsCompleted: 3,
+        overallAccuracy: 76,
+      },
+    });
+    render(<StudentDashboard onNavigate={vi.fn()} />);
+
+    expect(await screen.findByText('3 completed · 76% overall accuracy')).toBeTruthy();
+  });
+
+  it('keeps the rest of the dashboard available when assignment history fails', async () => {
+    vi.mocked(api.getLearningAssignmentHistory).mockRejectedValue(new Error('History unavailable'));
+    render(<StudentDashboard onNavigate={vi.fn()} />);
+
+    expect(await screen.findByText('Foundations of Computing')).toBeTruthy();
+    expect(await screen.findByText('Assignment history unavailable: History unavailable')).toBeTruthy();
   });
 
   it('persists task checkbox changes through the planner API', async () => {

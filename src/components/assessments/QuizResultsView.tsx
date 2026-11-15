@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   CheckCircle,
   XCircle,
@@ -12,6 +12,8 @@ import {
 } from 'lucide-react';
 import { AssessmentResult } from '../../types';
 import { NavTab } from '../layout/Sidebar';
+import { api } from '../../services/api';
+import { Button } from '../ui/Button';
 
 interface QuizResultsViewProps {
   result: AssessmentResult;
@@ -24,6 +26,54 @@ export const QuizResultsView: React.FC<QuizResultsViewProps> = ({
   onRetake,
   onNavigate
 }) => {
+  const [learningAnalysisStatus, setLearningAnalysisStatus] = useState(result.learningAnalysisStatus || 'LEARNING_ANALYSIS_PENDING');
+  const [learningAnalysisError, setLearningAnalysisError] = useState<string | null>(null);
+  const [isRetryingAnalysis, setIsRetryingAnalysis] = useState(false);
+
+  const retryLearningAnalysis = async () => {
+    setIsRetryingAnalysis(true);
+    setLearningAnalysisError(null);
+    try {
+      const analysis = await api.retryLearningAssignmentAnalysis(result.assessmentId);
+      setLearningAnalysisStatus(analysis.status);
+      if (analysis.status === 'LEARNING_ANALYSIS_FAILED') {
+        setLearningAnalysisError(analysis.message || 'Learning analysis failed. Retry it from Learning Agent.');
+      }
+    } catch (error) {
+      setLearningAnalysisStatus('LEARNING_ANALYSIS_FAILED');
+      setLearningAnalysisError(error instanceof Error ? error.message : 'Learning analysis could not be completed.');
+    } finally {
+      setIsRetryingAnalysis(false);
+    }
+  };
+
+  useEffect(() => {
+    setLearningAnalysisStatus(result.learningAnalysisStatus || 'LEARNING_ANALYSIS_PENDING');
+    setLearningAnalysisError(null);
+    if (!result.aiGenerated || result.status !== 'RESULTS_PUBLISHED'
+      || result.learningAnalysisStatus === 'LEARNING_ANALYSIS_COMPLETED') return;
+    let active = true;
+    void api.retryLearningAssignmentAnalysis(result.assessmentId).then(
+      (analysis) => {
+        if (active) {
+          setLearningAnalysisStatus(analysis.status);
+          if (analysis.status === 'LEARNING_ANALYSIS_FAILED') {
+            setLearningAnalysisError(analysis.message || 'Learning analysis failed. Retry it from Learning Agent.');
+          }
+        }
+      },
+      (error: unknown) => {
+        if (active) {
+          setLearningAnalysisStatus('LEARNING_ANALYSIS_FAILED');
+          setLearningAnalysisError(error instanceof Error ? error.message : 'Learning analysis could not be completed.');
+        }
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [result.assessmentId, result.aiGenerated, result.learningAnalysisStatus, result.status]);
+
   const formatTime = (secs: number) => {
     const mins = Math.floor(secs / 60);
     const s = secs % 60;
@@ -181,10 +231,18 @@ export const QuizResultsView: React.FC<QuizResultsViewProps> = ({
       </div>
 
       {/* Actions */}
-      {result.learningAnalysisStatus && (
-        <p className="text-xs text-[#64748B]" role="status">
-          Learning analysis: {result.learningAnalysisStatus.replaceAll('_', ' ').toLowerCase()}.
-        </p>
+      {result.aiGenerated && result.status === 'RESULTS_PUBLISHED' && (
+        <div className="space-y-2" aria-live="polite">
+          <p className="text-xs text-[#64748B]" role="status">
+            Learning analysis: {learningAnalysisStatus.replaceAll('_', ' ').toLowerCase()}.
+          </p>
+          {learningAnalysisError && <p className="text-xs text-red-700" role="alert">{learningAnalysisError}</p>}
+          {learningAnalysisStatus === 'LEARNING_ANALYSIS_FAILED' && (
+            <Button type="button" variant="outline" isLoading={isRetryingAnalysis} onClick={() => void retryLearningAnalysis()}>
+              Retry learning analysis
+            </Button>
+          )}
+        </div>
       )}
       <div className="flex flex-wrap items-center justify-between gap-3 p-4 bg-white border border-[#E2E8F0] rounded-xl">
         <button
@@ -196,10 +254,10 @@ export const QuizResultsView: React.FC<QuizResultsViewProps> = ({
         </button>
 
         <button
-          onClick={() => onNavigate(result.aiGenerated ? 'learning-path' : 'dashboard')}
+          onClick={() => onNavigate(result.aiGenerated ? 'learning-agent' : 'dashboard')}
           className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#4338CA] hover:bg-[#3730A3] rounded-lg transition-colors shadow-xs"
         >
-          {result.aiGenerated ? 'Open Learning Path' : 'Return to Overview'}
+          {result.aiGenerated ? 'Open Learning Agent' : 'Return to Overview'}
           <ArrowRight className="w-3.5 h-3.5" />
         </button>
       </div>

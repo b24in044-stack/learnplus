@@ -1,9 +1,17 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AssessmentResult } from '../../types';
 import { QuizResultsView } from './QuizResultsView';
+
+vi.mock('../../services/api', () => ({
+  api: {
+    retryLearningAssignmentAnalysis: vi.fn(),
+  },
+}));
+
+import { api } from '../../services/api';
 
 const result: AssessmentResult = {
   submissionId: 'submission-1',
@@ -29,6 +37,11 @@ const result: AssessmentResult = {
 };
 
 describe('QuizResultsView tutor handoff', () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
   it('passes the completed assignment course and evidence-based prompt to the tutor', () => {
     const onNavigate = vi.fn();
     render(<QuizResultsView result={result} onRetake={vi.fn()} onNavigate={onNavigate} />);
@@ -39,5 +52,43 @@ describe('QuizResultsView tutor handoff', () => {
       courseId: 'course-1',
       topicQuery: result.recommendedFollowUp.practicePrompt,
     });
+  });
+
+  it('starts learning analysis only after published results are displayed and navigates to Learning Agent', async () => {
+    vi.mocked(api.retryLearningAssignmentAnalysis).mockResolvedValue({
+      status: 'LEARNING_ANALYSIS_COMPLETED',
+    });
+    const onNavigate = vi.fn();
+    render(
+      <QuizResultsView
+        result={{ ...result, status: 'RESULTS_PUBLISHED', learningAnalysisStatus: 'LEARNING_ANALYSIS_PENDING' }}
+        onRetake={vi.fn()}
+        onNavigate={onNavigate}
+      />,
+    );
+
+    expect(screen.getByRole('heading', { name: 'DBMS Practice' })).toBeTruthy();
+    await waitFor(() => {
+      expect(api.retryLearningAssignmentAnalysis).toHaveBeenCalledWith('assessment-1');
+      expect(screen.getByText('Learning analysis: learning analysis completed.')).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Open Learning Agent' }));
+    expect(onNavigate).toHaveBeenCalledWith('learning-agent');
+  });
+
+  it('retains the published result and exposes a manual retry if analysis fails', async () => {
+    vi.mocked(api.retryLearningAssignmentAnalysis).mockRejectedValue(new Error('Analysis unavailable'));
+    render(
+      <QuizResultsView
+        result={{ ...result, status: 'RESULTS_PUBLISHED', learningAnalysisStatus: 'LEARNING_ANALYSIS_PENDING' }}
+        onRetake={vi.fn()}
+        onNavigate={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'DBMS Practice' })).toBeTruthy();
+    expect((await screen.findByRole('alert')).textContent).toContain('Analysis unavailable');
+    expect(screen.getByRole('button', { name: 'Retry learning analysis' })).toBeTruthy();
+    expect(screen.getByText('50%')).toBeTruthy();
   });
 });
