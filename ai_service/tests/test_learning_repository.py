@@ -202,6 +202,14 @@ def test_supabase_query_failures_log_only_safe_error_code(caplog):
     assert "access-token" not in caplog.text
 
 
+def test_maybe_single_query_without_a_row_returns_none():
+    class EmptyQuery:
+        def execute(self):
+            return None
+
+    assert SupabaseLearningRepository._run_query(EmptyQuery()) is None
+
+
 def test_student_data_uses_trusted_client_and_validates_profile(monkeypatch):
     client = FakeSupabase()
     trusted_clients = []

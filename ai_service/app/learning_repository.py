@@ -44,7 +44,7 @@ class SupabaseLearningRepository:
     def _run_query(query):
         try:
             response = query.execute()
-            return response.data
+            return response.data if response is not None else None
         except APIError as error:
             code = getattr(error, "code", None)
             safe_code = (
